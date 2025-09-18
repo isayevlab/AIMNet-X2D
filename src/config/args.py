@@ -233,7 +233,7 @@ def _add_system_arguments(parser: argparse.ArgumentParser) -> None:
     system_group = parser.add_argument_group('System Options')
     
     # Hardware
-    system_group.add_argument("--num_workers", type=int, default=4,
+    system_group.add_argument("--num_workers", type=int, default=10,
                              help="Number of data loading workers")
     system_group.add_argument("--num_gpu_devices", type=int, default=1,
                              help="Number of GPU devices for training")
