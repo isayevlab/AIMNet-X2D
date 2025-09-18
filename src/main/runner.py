@@ -60,6 +60,9 @@ from .utils import (
 
 import h5py
 
+from datasets import ATOM_TYPES, DEGREES, HYBRIDIZATIONS
+
+
 def main_runner(args) -> Dict[str, Any]:
     """
     Main execution runner that orchestrates the entire training/inference pipeline.
@@ -886,7 +889,7 @@ def _extract_embeddings_if_requested(args, model: torch.nn.Module, data_loaders:
 
 def _save_best_model(args, model: torch.nn.Module, preprocessing_pipeline, 
                     test_metrics: Dict[str, Any], is_ddp: bool) -> None:
-    """Save the best model with preprocessing pipeline information."""
+    """Save the best model with COMPLETE preprocessing pipeline information."""
     if not is_main_process():
         return
     
@@ -898,9 +901,10 @@ def _save_best_model(args, model: torch.nn.Module, preprocessing_pipeline,
         model_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
         model_for_config = model
     
-    # Create model artifact with all necessary information
+    # CRITICAL FIX: Save COMPLETE model configuration
     model_artifact = {
         "hyperparams": {
+            # Core model architecture - COMPLETE SET
             "task_type": args.task_type,
             "num_shells": args.num_shells,
             "hidden_dim": args.hidden_dim,
@@ -922,26 +926,42 @@ def _save_best_model(args, model: torch.nn.Module, preprocessing_pipeline,
             "evidential_lambda": getattr(args, 'evidential_lambda', 1.0),
             "best_val_loss": test_metrics.get("loss", float('inf')),
             
-            # Preprocessing pipeline information
-            "preprocessing_config": {
-                "apply_sae": preprocessing_pipeline.config.apply_sae,
-                "sae_subtasks": preprocessing_pipeline.config.sae_subtasks,
-                "apply_standard_scaling": preprocessing_pipeline.config.apply_standard_scaling,
-                "task_type": preprocessing_pipeline.config.task_type,
-                "sae_percentile_cutoff": preprocessing_pipeline.config.sae_percentile_cutoff
-            } if preprocessing_pipeline else None,
+            # CRITICAL FIX: Save feature sizes used during training
+            "feature_sizes": {
+                'atom_type': len(ATOM_TYPES) + 1,
+                'hydrogen_count': 9,
+                'degree': len(DEGREES) + 1,
+                'hybridization': len(HYBRIDIZATIONS) + 1,
+            },
             
-            # Scaler parameters
+            # CRITICAL FIX: Save data configuration used during training
+            "data_config": {
+                "smiles_column": args.smiles_column,
+                "target_column": getattr(args, 'target_column', None),
+                "multi_target_columns": getattr(args, 'multi_target_columns', None),
+                "multitask_weights": getattr(args, 'multitask_weights', None),
+            },
+            
+            # CRITICAL FIX: Complete preprocessing pipeline information
+            "preprocessing_config": {
+                "apply_sae": preprocessing_pipeline.config.apply_sae if preprocessing_pipeline else False,
+                "sae_subtasks": preprocessing_pipeline.config.sae_subtasks if preprocessing_pipeline else None,
+                "apply_standard_scaling": preprocessing_pipeline.config.apply_standard_scaling if preprocessing_pipeline else True,
+                "task_type": preprocessing_pipeline.config.task_type if preprocessing_pipeline else args.task_type,
+                "sae_percentile_cutoff": preprocessing_pipeline.config.sae_percentile_cutoff if preprocessing_pipeline else 2.0
+            },
+            
+            # Scaler parameters - REQUIRED for inference
             "scaler_means": preprocessing_pipeline.standard_scaler.means.tolist() if (
-                preprocessing_pipeline and preprocessing_pipeline.standard_scaler
+                preprocessing_pipeline and preprocessing_pipeline.standard_scaler and preprocessing_pipeline.standard_scaler.is_fitted
             ) else None,
             "scaler_stds": preprocessing_pipeline.standard_scaler.stds.tolist() if (
-                preprocessing_pipeline and preprocessing_pipeline.standard_scaler
+                preprocessing_pipeline and preprocessing_pipeline.standard_scaler and preprocessing_pipeline.standard_scaler.is_fitted
             ) else None,
             
-            # SAE statistics
+            # SAE statistics - REQUIRED for inference if SAE was used
             "sae_statistics": preprocessing_pipeline.sae_normalizer.sae_statistics if (
-                preprocessing_pipeline and preprocessing_pipeline.sae_normalizer
+                preprocessing_pipeline and preprocessing_pipeline.sae_normalizer and preprocessing_pipeline.sae_normalizer.is_fitted
             ) else None,
         },
         "state_dict": model_state_dict
@@ -954,9 +974,7 @@ def _save_best_model(args, model: torch.nn.Module, preprocessing_pipeline,
     
     # Save model
     torch.save(model_artifact, args.model_save_path)
-    print(f"✅ Model saved to: {args.model_save_path}")
-
-
+    print(f"✅ Model saved with COMPLETE hyperparameters to: {args.model_save_path}")
 
 def _check_hdf5_files_exist(args) -> bool:
     """

@@ -154,20 +154,26 @@ class InferencePipeline:
 
     def _build_model_from_hyperparams(self, hyperparams: Dict[str, Any], state_dict: Dict[str, Any]) -> GNN:
         """Build model using EXACT hyperparameters from saved model."""
-        # Use exact feature sizes from training
-        feature_sizes = {
-            'atom_type': 119,  # ATOM_TYPES
-            'hydrogen_count': 9,
-            'degree': 7,  # DEGREES
-            'hybridization': 7,  # HYBRIDIZATIONS
-        }
+        
+        # CRITICAL FIX: Use feature sizes from saved model, not hardcoded values
+        if "feature_sizes" in hyperparams:
+            feature_sizes = hyperparams["feature_sizes"]
+            print(f"[Model] Using saved feature sizes: {feature_sizes}")
+        else:
+            # Fallback with warning
+            print(f"[Model] WARNING: No feature_sizes in saved model, using defaults")
+            feature_sizes = {
+                'atom_type': 119,
+                'hydrogen_count': 9,
+                'degree': 7,
+                'hybridization': 7,
+            }
         
         # Get exact output dimension from state dict
         output_dim = self._get_output_dim_from_state_dict(state_dict, hyperparams)
-        
         print(f"[Model] Building model with output_dim={output_dim}")
         
-        # CRITICAL FIX: Use ALL hyperparameters from saved model
+        # CRITICAL FIX: Use ALL hyperparameters from saved model with proper defaults
         model = GNN(
             feature_sizes=feature_sizes,
             hidden_dim=hyperparams["hidden_dim"],
@@ -181,29 +187,48 @@ class InferencePipeline:
             embedding_dim=hyperparams.get("embedding_dim", 64),
             use_partial_charges=hyperparams.get("use_partial_charges", False),
             use_stereochemistry=hyperparams.get("use_stereochemistry", False),
-            ffn_dropout=hyperparams.get("ffn_dropout", 0.05),  # FIXED: Was missing
+            ffn_dropout=hyperparams.get("ffn_dropout", 0.05),
             activation_type=hyperparams.get("activation_type", "silu"),
-            shell_conv_num_mlp_layers=hyperparams.get("shell_conv_num_mlp_layers", 2),  # FIXED: Was missing
-            shell_conv_dropout=hyperparams.get("shell_conv_dropout", 0.05),  # FIXED: Was missing
-            attention_num_heads=hyperparams.get("attention_num_heads", 4),  # FIXED: Was missing
-            attention_temperature=hyperparams.get("attention_temperature", 1.0),  # FIXED: Was missing
+            shell_conv_num_mlp_layers=hyperparams.get("shell_conv_num_mlp_layers", 2),
+            shell_conv_dropout=hyperparams.get("shell_conv_dropout", 0.05),
+            attention_num_heads=hyperparams.get("attention_num_heads", 4),
+            attention_temperature=hyperparams.get("attention_temperature", 1.0),
             loss_function=hyperparams.get("loss_function", "l1")
         ).to(self.device)
         
-        # Load state dict
-        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
-        if missing_keys:
-            print(f"[Model] WARNING: Missing keys in state dict: {missing_keys}")
-        if unexpected_keys:
-            print(f"[Model] WARNING: Unexpected keys in state dict: {unexpected_keys}")
+        # CRITICAL FIX: Strict loading with proper error handling
+        try:
+            missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
+            if missing_keys:
+                raise ValueError(f"Missing keys in state dict: {missing_keys}")
+            if unexpected_keys:
+                raise ValueError(f"Unexpected keys in state dict: {unexpected_keys}")
+        except Exception as e:
+            raise ValueError(f"Failed to load model state dict: {e}")
         
         model.eval()
         
         print(f"[Model] Model loaded successfully with {sum(p.numel() for p in model.parameters()):,} parameters")
+        
+        # CRITICAL FIX: Validate that loaded model matches expected configuration
+        self._validate_loaded_model(model, hyperparams)
+        
         return model
 
+    def _validate_loaded_model(self, model: GNN, hyperparams: Dict[str, Any]) -> None:
+        """Validate that loaded model matches saved hyperparameters."""
+        try:
+            # Check critical architecture parameters
+            assert model.hidden_dim == hyperparams["hidden_dim"], f"Hidden dim mismatch: {model.hidden_dim} != {hyperparams['hidden_dim']}"
+            assert model.num_shells == hyperparams["num_shells"], f"Num shells mismatch: {model.num_shells} != {hyperparams['num_shells']}"
+            assert model.task_type == hyperparams["task_type"], f"Task type mismatch: {model.task_type} != {hyperparams['task_type']}"
+            assert model.loss_function == hyperparams.get("loss_function", "l1"), f"Loss function mismatch"
+            
+            print(f"[Model] ✅ Model validation passed")
+            
+        except AssertionError as e:
+            raise ValueError(f"Model validation failed: {e}")
 
-    
     def _get_output_dim_from_state_dict(self, state_dict: Dict[str, Any], hyperparams: Dict[str, Any]) -> int:
         """Determine output dimension from state dict."""
         output_keys = [
