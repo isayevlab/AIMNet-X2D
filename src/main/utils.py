@@ -342,15 +342,7 @@ def check_hyperparameter_optimization_mode(args) -> str:
 
 
 def prepare_wandb_config(args) -> Dict[str, Any]:
-    """
-    Prepare configuration dictionary for Weights & Biases logging.
-    
-    Args:
-        args: Command line arguments
-        
-    Returns:
-        Configuration dictionary for wandb
-    """
+    """Prepare configuration dictionary for Weights & Biases logging."""
     wandb_config = {
         # Model architecture
         "hidden_dim": args.hidden_dim,
@@ -389,17 +381,8 @@ def prepare_wandb_config(args) -> Dict[str, Any]:
     
     return wandb_config
 
-
 def setup_experiment_logging(args) -> Optional[Any]:
-    """
-    Setup experiment logging with Weights & Biases.
-    
-    Args:
-        args: Command line arguments
-        
-    Returns:
-        Wandb run object or None if not enabled
-    """
+    """Setup experiment logging with Weights & Biases."""
     if not args.enable_wandb:
         return None
     
@@ -410,7 +393,7 @@ def setup_experiment_logging(args) -> Optional[Any]:
         wandb_config = prepare_wandb_config(args)
         
         # Setup tags
-        tags = ["aimnet-x2d"]
+        tags = ["aimnet-x2d"]  # FIXED: was unclear naming
         if args.wandb_tags_list:
             tags.extend(args.wandb_tags_list)
         
@@ -447,7 +430,6 @@ def setup_experiment_logging(args) -> Optional[Any]:
     except Exception as e:
         print(f"WARNING: Failed to initialize Weights & Biases: {e}")
         return None
-
 
 def finalize_experiment_logging(wandb_run, results: Dict[str, Any]) -> None:
     """

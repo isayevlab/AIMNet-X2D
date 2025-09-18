@@ -19,7 +19,7 @@ class InferenceConfig:
     # Model settings
     model_path: str = None
     batch_size: int = 64
-    max_hops: int = 3
+    max_hops: int = None  # Will be set from model
     
     # Processing settings
     chunk_size: int = 1000
@@ -52,6 +52,8 @@ class InferenceConfig:
         if not self.input_path:
             raise ValueError("input_path must be specified")
         
+        # Check if input file exists
+        from pathlib import Path
         if not Path(self.input_path).exists():
             raise FileNotFoundError(f"Input file not found: {self.input_path}")
         
@@ -88,7 +90,7 @@ class InferenceConfig:
             smiles_column=args.smiles_column,
             model_path=args.model_save_path,
             batch_size=args.stream_batch_size or args.batch_size,
-            max_hops=args.num_shells,
+            max_hops=None,  # Will be loaded from model
             chunk_size=args.stream_chunk_size,
             num_workers=args.num_workers,
             mc_samples=args.mc_samples,

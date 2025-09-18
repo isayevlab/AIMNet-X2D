@@ -23,10 +23,9 @@ def evaluate(
     criterion, 
     device, 
     task_type='regression',
-    sae_normalizer=None,  
     mixed_precision=False,
     num_tasks=1,
-    std_scaler=None,
+    preprocessing_pipeline=None,
     is_ddp=False
 ):
     """
@@ -38,14 +37,10 @@ def evaluate(
         criterion: Loss function
         device: Device to evaluate on
         task_type: Type of task ('regression' or 'multitask')
-        sae_normalizer: Optional SAE normalizer (deprecated, kept for compatibility)
         mixed_precision: Whether to use mixed precision
         num_tasks: Number of tasks
-        std_scaler: Optional standard scaler (None if data is already preprocessed in HDF5)
+        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         is_ddp: Whether distributed data parallel is enabled
-        
-    Returns:
-        Dictionary of evaluation metrics
     """
     model.eval()
     total_size = 0
@@ -117,19 +112,18 @@ def evaluate(
 
     # Calculate metrics based on task type
     if task_type == 'multitask':
-        metrics = _compute_multitask_metrics(all_preds_list, all_targets_list, avg_loss, std_scaler)
+        metrics = _compute_multitask_metrics(all_preds_list, all_targets_list, avg_loss, preprocessing_pipeline)
     else:
-        metrics = _compute_single_task_metrics(all_preds_list, all_targets_list, avg_loss, std_scaler)
+        metrics = _compute_single_task_metrics(all_preds_list, all_targets_list, avg_loss, preprocessing_pipeline)
 
     # Combine metrics across ranks for DDP
     if is_ddp and dist.is_available() and dist.is_initialized():
         metrics = _combine_ddp_metrics(
             metrics, total_loss, total_size, all_preds_list, all_targets_list,
-            device, task_type, num_tasks, std_scaler
+            device, task_type, num_tasks, preprocessing_pipeline  # CHANGED: was std_scaler
         )
 
     return metrics
-
 
 def _process_evidential_outputs_for_metrics(outputs: torch.Tensor, model) -> torch.Tensor:
     """
@@ -154,9 +148,8 @@ def _process_evidential_outputs_for_metrics(outputs: torch.Tensor, model) -> tor
     
     return outputs
 
-
 def _combine_ddp_metrics(metrics, total_loss, total_size, all_preds_list, all_targets_list,
-                        device, task_type, num_tasks, std_scaler):
+                        device, task_type, num_tasks, preprocessing_pipeline):
     """Combine evaluation metrics across DDP ranks."""
     # All-reduce the total_loss and total_size
     local_tensor = torch.tensor([total_loss, total_size], dtype=torch.float, device=device)
@@ -174,11 +167,11 @@ def _combine_ddp_metrics(metrics, total_loss, total_size, all_preds_list, all_ta
     
     if task_type == 'multitask':
         final_metrics = _combine_multitask_ddp_metrics(
-            all_preds_list, all_targets_list, global_avg_loss, num_tasks, std_scaler, rank, device
+            all_preds_list, all_targets_list, global_avg_loss, num_tasks, preprocessing_pipeline, rank, device
         )
     else:
         final_metrics = _combine_single_task_ddp_metrics(
-            all_preds_list, all_targets_list, global_avg_loss, std_scaler, rank, device
+            all_preds_list, all_targets_list, global_avg_loss, preprocessing_pipeline, rank, device
         )
 
     # Broadcast final_metrics to all ranks
@@ -186,7 +179,7 @@ def _combine_ddp_metrics(metrics, total_loss, total_size, all_preds_list, all_ta
     
     return final_metrics
 
-def _compute_multitask_metrics(all_preds_list, all_targets_list, avg_loss, std_scaler):
+def _compute_multitask_metrics(all_preds_list, all_targets_list, avg_loss, preprocessing_pipeline):
     """Compute metrics for multitask evaluation."""
     if len(all_preds_list) == 0:
         return {'loss': avg_loss}
@@ -194,11 +187,11 @@ def _compute_multitask_metrics(all_preds_list, all_targets_list, avg_loss, std_s
     Y_pred = np.concatenate(all_preds_list, axis=0)
     Y_true = np.concatenate(all_targets_list, axis=0)
 
-    # ALWAYS apply inverse scaling if std_scaler is provided
-    # This converts from standardized scale back to original scale for meaningful metrics
-    if std_scaler is not None:
-        Y_pred = std_scaler.inverse_transform(Y_pred)
-        Y_true = std_scaler.inverse_transform(Y_true)
+    # Apply inverse preprocessing if pipeline is provided
+    # Note: We don't have SMILES here, so we can only do standard scaling inverse
+    if preprocessing_pipeline is not None and preprocessing_pipeline.standard_scaler is not None:
+        Y_pred = preprocessing_pipeline.standard_scaler.inverse_transform(Y_pred)
+        Y_true = preprocessing_pipeline.standard_scaler.inverse_transform(Y_true)
 
     mae_vals = []
     rmse_vals = []
@@ -228,7 +221,7 @@ def _compute_multitask_metrics(all_preds_list, all_targets_list, avg_loss, std_s
     }
 
 
-def _compute_single_task_metrics(all_preds_list, all_targets_list, avg_loss, std_scaler):
+def _compute_single_task_metrics(all_preds_list, all_targets_list, avg_loss, preprocessing_pipeline):
     """Compute metrics for single-task evaluation."""
     if len(all_preds_list) == 0:
         return {'loss': avg_loss}
@@ -236,11 +229,11 @@ def _compute_single_task_metrics(all_preds_list, all_targets_list, avg_loss, std
     preds_np = np.concatenate(all_preds_list, axis=0)
     targets_np = np.concatenate(all_targets_list, axis=0)
     
-    # ALWAYS apply inverse scaling if std_scaler is provided
-    # This converts from standardized scale back to original scale for meaningful metrics
-    if std_scaler is not None:
-        preds_np = std_scaler.inverse_transform(preds_np)
-        targets_np = std_scaler.inverse_transform(targets_np)
+    # Apply inverse preprocessing if pipeline is provided
+    # Note: We don't have SMILES here, so we can only do standard scaling inverse
+    if preprocessing_pipeline is not None and preprocessing_pipeline.standard_scaler is not None:
+        preds_np = preprocessing_pipeline.standard_scaler.inverse_transform(preds_np)
+        targets_np = preprocessing_pipeline.standard_scaler.inverse_transform(targets_np)
         
     rmse_value = math.sqrt(mean_squared_error(targets_np, preds_np))
     
@@ -253,7 +246,7 @@ def _compute_single_task_metrics(all_preds_list, all_targets_list, avg_loss, std
 
 
 def _combine_multitask_ddp_metrics(all_preds_list, all_targets_list, global_avg_loss, 
-                                  num_tasks, std_scaler, rank, device):
+                                  num_tasks, preprocessing_pipeline, rank, device):
     """Combine multitask metrics across DDP ranks."""
     # Flatten local preds
     if len(all_preds_list) == 0:
@@ -267,10 +260,10 @@ def _combine_multitask_ddp_metrics(all_preds_list, all_targets_list, global_avg_
     global_targs = gather_ndarray_to_rank0(local_targs_np, device)
 
     if rank == 0 and global_preds.shape[0] > 0:
-        # ALWAYS apply inverse scaling if std_scaler is provided
-        if std_scaler is not None:
-            global_preds = std_scaler.inverse_transform(global_preds)
-            global_targs = std_scaler.inverse_transform(global_targs)
+        # Apply inverse preprocessing if pipeline is provided
+        if preprocessing_pipeline is not None and preprocessing_pipeline.standard_scaler is not None:
+            global_preds = preprocessing_pipeline.standard_scaler.inverse_transform(global_preds)
+            global_targs = preprocessing_pipeline.standard_scaler.inverse_transform(global_targs)
 
         M = global_targs.shape[1]
         mae_vals = []
@@ -303,7 +296,7 @@ def _combine_multitask_ddp_metrics(all_preds_list, all_targets_list, global_avg_
 
 
 def _combine_single_task_ddp_metrics(all_preds_list, all_targets_list, global_avg_loss, 
-                                   std_scaler, rank, device):
+                                   preprocessing_pipeline, rank, device):
     """Combine single-task metrics across DDP ranks."""
     # single-task regression
     if len(all_preds_list) == 0:
@@ -317,10 +310,10 @@ def _combine_single_task_ddp_metrics(all_preds_list, all_targets_list, global_av
     global_targs = gather_ndarray_to_rank0(local_targs_np, device)
 
     if rank == 0 and global_preds.shape[0] > 0:
-        # ALWAYS apply inverse scaling if std_scaler is provided
-        if std_scaler is not None:
-            global_preds = std_scaler.inverse_transform(global_preds)
-            global_targs = std_scaler.inverse_transform(global_targs)
+        # Apply inverse preprocessing if pipeline is provided
+        if preprocessing_pipeline is not None and preprocessing_pipeline.standard_scaler is not None:
+            global_preds = preprocessing_pipeline.standard_scaler.inverse_transform(global_preds)
+            global_targs = preprocessing_pipeline.standard_scaler.inverse_transform(global_targs)
 
         mae_val = mean_absolute_error(global_targs, global_preds)
         rmse_val = math.sqrt(mean_squared_error(global_targs, global_preds))

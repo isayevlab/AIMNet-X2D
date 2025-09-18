@@ -63,7 +63,7 @@ class InferenceEngine:
             data_loader=inference_loader,
             device=device,
             task_type=self.pipeline.model.task_type,
-            std_scaler=self.pipeline.preprocessing_pipeline.standard_scaler if self.pipeline.preprocessing_pipeline else None,
+            preprocessing_pipeline=self.pipeline.preprocessing_pipeline,  # NEW API
             is_ddp=self.config.ddp_enabled
         )
         

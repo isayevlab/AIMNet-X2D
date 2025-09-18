@@ -730,8 +730,8 @@ def _load_pretrained_weights(model: torch.nn.Module, args) -> None:
     else:
         state_dict = pretrained_weights
     
-    # Load with strict=False to allow partial loading
-    model.load_state_dict(state_dict, strict=False)
+    # Load with strict=True to only allow full loading
+    model.load_state_dict(state_dict, strict=True)
     
     # Handle freezing
     if args.freeze_pretrained:
@@ -771,9 +771,8 @@ def _run_training(args, model: torch.nn.Module, data_loaders: Dict[str, Any],
     # Record training start time
     training_start_time = time.time()
     
-    # ALWAYS pass the std_scaler for proper inverse scaling during evaluation
-    # Even for HDF5 datasets, we need it to convert metrics back to original scale
-    std_scaler = data_info["preprocessing_pipeline"].standard_scaler
+    # Get the preprocessing pipeline
+    preprocessing_pipeline = data_info["preprocessing_pipeline"]
     
     # Run training
     trained_model = train_gnn(
@@ -789,7 +788,7 @@ def _run_training(args, model: torch.nn.Module, data_loaders: Dict[str, Any],
         mixed_precision=args.mixed_precision,
         num_tasks=data_info["num_tasks"],
         multitask_weights=multitask_weights,
-        std_scaler=std_scaler,  # Always pass scaler
+        preprocessing_pipeline=preprocessing_pipeline,  # CHANGED: was std_scaler
         is_ddp=is_ddp,
         current_args=args
     )
@@ -803,7 +802,6 @@ def _run_training(args, model: torch.nn.Module, data_loaders: Dict[str, Any],
         "training_time": training_time,
         "model": trained_model,
     }
-
 
 def _run_final_evaluation(args, model: torch.nn.Module, data_loaders: Dict[str, Any],
                          device: torch.device, is_ddp: bool, data_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -837,17 +835,8 @@ def _run_final_evaluation(args, model: torch.nn.Module, data_loaders: Dict[str, 
     else:
         raise ValueError(f"Invalid loss function: {args.loss_function}")
     
-    # FIXED: Always pass std_scaler for proper metric computation on original scale
-    # Whether data is in HDF5 or in-memory, we need the scaler to convert metrics 
-    # from standardized scale back to original scale for meaningful interpretation
-    std_scaler = None
-    if data_info["preprocessing_pipeline"] and data_info["preprocessing_pipeline"].standard_scaler:
-        std_scaler = data_info["preprocessing_pipeline"].standard_scaler
-        if is_main_process():
-            print("   → Using standard scaler for metric computation on original scale")
-    else:
-        if is_main_process():
-            print("   → No standard scaler available - metrics will be on preprocessed scale")
+    # Get the preprocessing pipeline
+    preprocessing_pipeline = data_info["preprocessing_pipeline"]
     
     # Evaluate on test set
     test_metrics = evaluate(
@@ -858,7 +847,7 @@ def _run_final_evaluation(args, model: torch.nn.Module, data_loaders: Dict[str, 
         task_type=args.task_type,
         mixed_precision=args.mixed_precision,
         num_tasks=data_info["num_tasks"],
-        std_scaler=std_scaler,  # Always pass scaler for proper metric scaling
+        preprocessing_pipeline=preprocessing_pipeline,  # CHANGED: was std_scaler
         is_ddp=is_ddp
     )
     
@@ -866,7 +855,6 @@ def _run_final_evaluation(args, model: torch.nn.Module, data_loaders: Dict[str, 
         print("Final evaluation completed")
     
     return test_metrics
-
 
 def _extract_embeddings_if_requested(args, model: torch.nn.Module, data_loaders: Dict[str, Any],
                                    device: torch.device) -> Dict[str, Any]:
@@ -1002,8 +990,7 @@ def _load_hdf5_preprocessing_info(args, smiles_train, target_train, smiles_val, 
     """
     Load preprocessing information when HDF5 files already exist.
     
-    Since HDF5 files contain preprocessed data, we need to reconstruct the preprocessing pipeline
-    for model saving and evaluation purposes.
+    CRITICAL FIX: Properly handle missing preprocessing statistics.
     """
     if is_main_process():
         print("📋 Reconstructing preprocessing pipeline from existing HDF5 files...")
@@ -1060,7 +1047,7 @@ def _load_hdf5_preprocessing_info(args, smiles_train, target_train, smiles_val, 
     except Exception as e:
         if is_main_process():
             print(f"   ⚠️  Could not read HDF5 metadata: {e}")
-            print("   → Assuming standard preprocessing was applied")
+            print("   → Will attempt to create preprocessing pipeline from arguments")
     
     # Reconstruct the preprocessing pipeline with actual statistics
     if preprocessing_applied:
@@ -1088,16 +1075,12 @@ def _load_hdf5_preprocessing_info(args, smiles_train, target_train, smiles_val, 
             if is_main_process():
                 print("   → Restored SAE normalizer with actual statistics")
         elif preprocessing_config.apply_sae:
-            # Create dummy SAE normalizer if statistics not available
-            preprocessing_pipeline.sae_normalizer = SAENormalizer(
-                task_type=preprocessing_config.task_type,
-                percentile_cutoff=preprocessing_config.sae_percentile_cutoff
+            # CRITICAL FIX: Raise error instead of creating dummy normalizer
+            raise ValueError(
+                "SAE normalization was requested but no SAE statistics found in HDF5 files. "
+                "Cannot perform training without proper SAE statistics. "
+                "Please recreate HDF5 files with SAE preprocessing."
             )
-            preprocessing_pipeline.sae_normalizer.sae_statistics = {"regression": {}} if args.task_type == "regression" else {}
-            preprocessing_pipeline.sae_normalizer.is_fitted = True
-            
-            if is_main_process():
-                print("   → Created dummy SAE normalizer (statistics not found in HDF5)")
         
         # Reconstruct standard scaler with actual statistics
         if preprocessing_config.apply_standard_scaling:
@@ -1110,12 +1093,12 @@ def _load_hdf5_preprocessing_info(args, smiles_train, target_train, smiles_val, 
                 if is_main_process():
                     print(f"   → Restored standard scaler with actual statistics")
             else:
-                # Fallback to dummy values
-                preprocessing_pipeline.standard_scaler.means = np.array([0.0])
-                preprocessing_pipeline.standard_scaler.stds = np.array([1.0])
-                if is_main_process():
-                    print("   ⚠️  Using dummy scaler statistics (not found in HDF5 metadata)")
-                    print("   ⚠️  Metrics may not be on original scale - consider recreating HDF5 files")
+                # CRITICAL FIX: Raise error instead of using dummy values
+                raise ValueError(
+                    "Standard scaling was requested but no scaler statistics found in HDF5 files. "
+                    "Cannot perform training without proper scaling statistics. "
+                    "Please recreate HDF5 files with preprocessing metadata."
+                )
             
             preprocessing_pipeline.standard_scaler.is_fitted = True
         
@@ -1155,8 +1138,6 @@ def _load_hdf5_preprocessing_info(args, smiles_train, target_train, smiles_val, 
         print("   → HDF5 files contain preprocessed data ready for training")
     
     return data_info
-
-
 
 def run_single_trial(args) -> Dict[str, Any]:
     """

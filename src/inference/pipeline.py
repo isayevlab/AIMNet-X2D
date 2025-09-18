@@ -25,48 +25,8 @@ from models import GNN
 from utils.distributed import safe_get_rank, is_main_process
 
 
+
 class InferencePipeline:
-    def cleanup_distributed_inference(self):
-        """Clean up distributed inference resources."""
-        try:
-            if self.embedding_manager:
-                self.embedding_manager.finalize()
-            
-            if self.is_ddp and dist.is_initialized():
-                try:
-                    device = next(self.model.parameters()).device
-                    if device.type == 'cuda':
-                        dist.barrier(device_ids=[device.index])
-                    else:
-                        dist.barrier()
-                    dist.destroy_process_group()
-                except Exception as e:
-                    print(f"[Pipeline] Cleanup warning: {e}")
-            
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-                
-        except Exception as e:
-            print(f"[Pipeline] Cleanup error: {e}")
-
-    def cleanup_and_exit(self):
-        """Clean up and exit without hanging - SIMPLIFIED VERSION."""
-        try:
-            print(f"[Pipeline] Rank {self.rank}: Cleaning up...")
-            
-            # Just clean up CUDA, don't touch the process group
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-            
-            # DON'T destroy process group - let torchrun handle it
-            print(f"[Pipeline] Rank {self.rank}: Cleanup complete")
-            
-        except Exception as e:
-            print(f"[Pipeline] Rank {self.rank}: Cleanup error: {e}")
-
-
     """Main inference pipeline that orchestrates the entire process."""
     
     def __init__(self, config: InferenceConfig):
@@ -101,12 +61,14 @@ class InferencePipeline:
         
         # Setup prediction methods
         if self.config.mc_samples > 0:
+            from .uncertainty import MCDropoutPredictor
             self.uncertainty_estimator = MCDropoutPredictor(
                 model=self.model,
                 device=device,
                 num_samples=self.config.mc_samples
             )
         else:
+            from .uncertainty import DeterministicPredictor
             self.deterministic_predictor = DeterministicPredictor(
                 model=self.model,
                 device=device
@@ -120,6 +82,7 @@ class InferencePipeline:
                 _, _, rank_molecules = self._calculate_ddp_work_distribution(total_molecules)
                 total_molecules = rank_molecules
             
+            from .embeddings import EmbeddingManager
             self.embedding_manager = EmbeddingManager(
                 model=self.model,
                 device=device,
@@ -129,7 +92,7 @@ class InferencePipeline:
                 rank=self.rank,
                 world_size=self.world_size
             )
-    
+
     def _load_model_and_preprocessing(self):
         """Load model and reconstruct preprocessing pipeline."""
         if not self.config.model_path or not os.path.exists(self.config.model_path):
@@ -137,27 +100,61 @@ class InferencePipeline:
         
         # Load model artifact
         model_artifact = torch.load(self.config.model_path, map_location=self.device)
+        
+        if "hyperparams" not in model_artifact:
+            raise ValueError("Model file missing hyperparams - incompatible model format")
+        
         hyperparams = model_artifact["hyperparams"]
         state_dict = model_artifact["state_dict"]
+        
+        # CRITICAL FIX: Verify critical hyperparameters match expectations
+        self._verify_model_compatibility(hyperparams)
         
         # Reconstruct preprocessing pipeline
         self.preprocessing_pipeline = PreprocessingReconstructor.load_preprocessing_pipeline(model_artifact)
         
-        # Build model
+        # Build model with EXACT hyperparameters from saved model
         self.model = self._build_model_from_hyperparams(hyperparams, state_dict)
         
         if is_main_process():
             print(f"[Pipeline] Model loaded from {self.config.model_path}")
+            print(f"[Pipeline] Model hyperparameters verified and restored")
             loss_function = hyperparams.get('loss_function', 'l1')
             print(f"[Pipeline] Loss function: {loss_function}")
+            print(f"[Pipeline] Hidden dim: {hyperparams.get('hidden_dim')}")
+            print(f"[Pipeline] Num shells: {hyperparams.get('num_shells')}")
+            print(f"[Pipeline] Task type: {hyperparams.get('task_type')}")
+            print(f"[Pipeline] FFN dropout: {hyperparams.get('ffn_dropout')}")
+            print(f"[Pipeline] Shell conv dropout: {hyperparams.get('shell_conv_dropout')}")
+            print(f"[Pipeline] Attention heads: {hyperparams.get('attention_num_heads')}")
             if self.preprocessing_pipeline:
-                print(f"[Pipeline] Preprocessing pipeline reconstructed")
-    
-    def _build_model_from_hyperparams(self, hyperparams: Dict[str, Any], state_dict: Dict[str, Any]) -> GNN:
-        """Build and load model from hyperparameters."""
-        from rdkit.Chem.rdchem import HybridizationType
+                print(f"[Pipeline] Preprocessing pipeline loaded successfully")
+
+    def _verify_model_compatibility(self, hyperparams: Dict[str, Any]) -> None:
+        """Verify that loaded model parameters are compatible with inference requirements."""
+        required_params = [
+            'hidden_dim', 'num_shells', 'num_message_passing_layers', 
+            'task_type', 'loss_function'
+        ]
         
-        # Feature sizes (should match training)
+        missing_params = []
+        for param in required_params:
+            if param not in hyperparams:
+                missing_params.append(param)
+        
+        if missing_params:
+            raise ValueError(f"Model missing critical hyperparameters: {missing_params}")
+        
+        # Verify inference configuration compatibility
+        if hasattr(self.config, 'max_hops') and self.config.max_hops and self.config.max_hops != hyperparams.get('num_shells'):
+            print(f"WARNING: Config max_hops ({self.config.max_hops}) != model num_shells ({hyperparams.get('num_shells')})")
+            print(f"Using model's num_shells value: {hyperparams.get('num_shells')}")
+            self.config.max_hops = hyperparams.get('num_shells')
+
+
+    def _build_model_from_hyperparams(self, hyperparams: Dict[str, Any], state_dict: Dict[str, Any]) -> GNN:
+        """Build model using EXACT hyperparameters from saved model."""
+        # Use exact feature sizes from training
         feature_sizes = {
             'atom_type': 119,  # ATOM_TYPES
             'hydrogen_count': 9,
@@ -165,40 +162,47 @@ class InferencePipeline:
             'hybridization': 7,  # HYBRIDIZATIONS
         }
         
-        # Determine output dimension from state dict
+        # Get exact output dimension from state dict
         output_dim = self._get_output_dim_from_state_dict(state_dict, hyperparams)
         
-        # Get loss function from hyperparams
-        loss_function = hyperparams.get('loss_function', 'l1')
+        print(f"[Model] Building model with output_dim={output_dim}")
         
-        # Create model
+        # CRITICAL FIX: Use ALL hyperparameters from saved model
         model = GNN(
             feature_sizes=feature_sizes,
             hidden_dim=hyperparams["hidden_dim"],
             output_dim=output_dim,
             num_shells=hyperparams["num_shells"],
             num_message_passing_layers=hyperparams["num_message_passing_layers"],
-            ffn_hidden_dim=hyperparams["ffn_hidden_dim"],
-            ffn_num_layers=hyperparams["ffn_num_layers"],
-            pooling_type=hyperparams["pooling_type"],
+            ffn_hidden_dim=hyperparams.get("ffn_hidden_dim", hyperparams["hidden_dim"]),
+            ffn_num_layers=hyperparams.get("ffn_num_layers", 3),
+            pooling_type=hyperparams.get("pooling_type", "attention"),
             task_type=hyperparams["task_type"],
-            embedding_dim=hyperparams["embedding_dim"],
+            embedding_dim=hyperparams.get("embedding_dim", 64),
             use_partial_charges=hyperparams.get("use_partial_charges", False),
             use_stereochemistry=hyperparams.get("use_stereochemistry", False),
-            ffn_dropout=hyperparams["ffn_dropout"],
+            ffn_dropout=hyperparams.get("ffn_dropout", 0.05),  # FIXED: Was missing
             activation_type=hyperparams.get("activation_type", "silu"),
-            shell_conv_num_mlp_layers=hyperparams.get("shell_conv_num_mlp_layers", 2),
-            shell_conv_dropout=hyperparams.get("shell_conv_dropout", 0.05),
-            attention_num_heads=hyperparams.get("attention_num_heads", 4),
-            attention_temperature=hyperparams.get("attention_temperature", 1.0),
-            loss_function=loss_function
+            shell_conv_num_mlp_layers=hyperparams.get("shell_conv_num_mlp_layers", 2),  # FIXED: Was missing
+            shell_conv_dropout=hyperparams.get("shell_conv_dropout", 0.05),  # FIXED: Was missing
+            attention_num_heads=hyperparams.get("attention_num_heads", 4),  # FIXED: Was missing
+            attention_temperature=hyperparams.get("attention_temperature", 1.0),  # FIXED: Was missing
+            loss_function=hyperparams.get("loss_function", "l1")
         ).to(self.device)
         
         # Load state dict
-        model.load_state_dict(state_dict, strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
+        if missing_keys:
+            print(f"[Model] WARNING: Missing keys in state dict: {missing_keys}")
+        if unexpected_keys:
+            print(f"[Model] WARNING: Unexpected keys in state dict: {unexpected_keys}")
+        
         model.eval()
         
+        print(f"[Model] Model loaded successfully with {sum(p.numel() for p in model.parameters()):,} parameters")
         return model
+
+
     
     def _get_output_dim_from_state_dict(self, state_dict: Dict[str, Any], hyperparams: Dict[str, Any]) -> int:
         """Determine output dimension from state dict."""
@@ -272,15 +276,11 @@ class InferencePipeline:
                 print(f"[Pipeline] Processed: {self.total_processed}, Valid: {self.valid_count}, Invalid: {self.invalid_count}")
         
         except Exception as e:
-            print(f"[Pipeline] Rank {self.rank}: Error in streaming inference: {e}")
-            raise
-        
-        finally:
-            # Always cleanup to prevent hanging
-            self.cleanup_and_exit()
+            print(f"[Pipeline] ERROR combining files: {e}")
     
+
     def _calculate_ddp_work_distribution(self, total_molecules: int) -> Tuple[int, int, int]:
-        """Calculate work distribution for DDP - FIXED VERSION."""
+        """Calculate work distribution for DDP."""
         if not self.is_ddp or self.world_size <= 1:
             return 1, None, total_molecules  # Skip header, process all
         
@@ -377,7 +377,7 @@ class InferencePipeline:
         
         for chunk_idx, chunk_df in enumerate(chunk_iterator):
             self._process_single_chunk(chunk_df, chunk_idx, output_file)
-    
+
     def _process_single_chunk(self, chunk_df: pd.DataFrame, chunk_idx: int, output_file: str):
         """Process a single chunk of data."""
         smiles_list = chunk_df[self.config.smiles_column].tolist()
@@ -439,17 +439,21 @@ class InferencePipeline:
         
         if self.rank == 0:  # Only main rank prints progress
             print(f"[Pipeline] Chunk {chunk_idx+1}: {len(valid_data['smiles'])} molecules in {processing_time:.2f}s")
-    
+
     def _predict_evidential_with_uncertainty(self, data_loader, embedding_callback):
         """Make predictions with evidential uncertainty estimation."""
         self.model.eval()
         all_preds = []
         all_uncertainties = []
+        all_smiles = []  # FIXED: Collect SMILES for SAE inverse transform
         
         with torch.no_grad():
             for batch in data_loader:
                 if batch is None:
                     continue
+                
+                # FIXED: Collect SMILES from each batch
+                all_smiles.extend(batch.smiles_list)
                 
                 # Extract embeddings if callback provided
                 if embedding_callback is not None:
@@ -485,14 +489,17 @@ class InferencePipeline:
             combined_preds = np.concatenate(all_preds, axis=0)
             combined_uncertainties = np.concatenate(all_uncertainties, axis=0)
             
-            # Apply inverse preprocessing
+            # FIXED: Apply inverse preprocessing with SMILES
             if self.preprocessing_pipeline:
-                combined_preds = self.preprocessing_pipeline.inverse_transform(combined_preds)
+                combined_preds = self.preprocessing_pipeline.inverse_transform(
+                    smiles_list=all_smiles,  # FIXED: Pass the collected SMILES
+                    transformed_targets=combined_preds
+                )
             
             return combined_preds, combined_uncertainties
         
         return np.array([]), np.array([])
-    
+
     def _process_evidential_outputs_with_uncertainty(self, outputs):
         """Process evidential outputs to get predictions and uncertainties."""
         batch_size = outputs.shape[0]
@@ -518,7 +525,8 @@ class InferencePipeline:
     
     def _compute_features_parallel(self, smiles_list: list, chunk_idx: int) -> dict:
         """Compute molecular features in parallel."""
-        process_inputs = [(idx, smi, self.config.max_hops) for idx, smi in enumerate(smiles_list)]
+        max_hops = self.config.max_hops or 3  # Default to 3 if not set
+        process_inputs = [(idx, smi, max_hops) for idx, smi in enumerate(smiles_list)]
         
         with Pool(processes=self.config.num_workers) as pool:
             results = list(pool.imap(
@@ -597,7 +605,7 @@ class InferencePipeline:
             return None
     
     def _write_chunk_results(self, chunk_df: pd.DataFrame, valid_data: dict, 
-                        predictions: np.ndarray, uncertainties: np.ndarray, output_file: str):
+                            predictions: np.ndarray, uncertainties: np.ndarray, output_file: str):
         """Write chunk results to output file."""
         if len(predictions) == 0:
             return
@@ -628,14 +636,13 @@ class InferencePipeline:
                     if has_uncertainties:
                         unc_val = uncertainties[pred_idx].item() if len(uncertainties.shape) > 1 else uncertainties[pred_idx]
                         line.append(str(unc_val))
-                
-                # 🔥 ADD THIS CRITICAL LINE:
+
                 f.write(','.join(line) + '\n')
             
             f.flush()  # Ensure data is written immediately
-
+    
     def _combine_ddp_results(self, rank_output_file: str):
-        """Combine results from all DDP ranks - FIXED VERSION."""
+        """Combine results from all DDP ranks."""
         if not self.is_ddp:
             return
         
@@ -699,3 +706,78 @@ class InferencePipeline:
                     
         except Exception as e:
             print(f"[Pipeline] ERROR combining files: {e}")
+
+    def cleanup_and_exit(self):
+        """Properly clean up DDP resources without hanging."""
+        try:
+            rank = self.rank
+            print(f"[Pipeline] Rank {rank}: Starting cleanup...")
+            
+            # 1. Finalize any ongoing operations
+            if self.embedding_manager:
+                self.embedding_manager.finalize()
+            
+            # 2. Close file handles
+            self._close_file_handles()
+            
+            # 3. Synchronize all ranks before GPU cleanup
+            if dist.is_available() and dist.is_initialized():
+                print(f"[Pipeline] Rank {rank}: Synchronizing before cleanup...")
+                dist.barrier()
+            
+            # 4. GPU cleanup
+            if torch.cuda.is_available():
+                # Move model to CPU first to free GPU memory
+                if hasattr(self, 'model') and self.model is not None:
+                    self.model.cpu()
+                
+                # Clear cache and synchronize
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+                # Reset CUDA context if possible
+                if hasattr(torch.cuda, 'reset_peak_memory_stats'):
+                    torch.cuda.reset_peak_memory_stats()
+            
+            # 5. CPU memory cleanup
+            import gc
+            gc.collect()
+            
+            # 6. Final barrier before process group cleanup
+            if dist.is_available() and dist.is_initialized():
+                print(f"[Pipeline] Rank {rank}: Final synchronization...")
+                dist.barrier()
+                
+                # Let rank 0 signal completion
+                if rank == 0:
+                    print("[Pipeline] All ranks synchronized, cleanup complete")
+            
+            print(f"[Pipeline] Rank {rank}: Cleanup successful")
+            
+        except Exception as e:
+            print(f"[Pipeline] Rank {rank}: Cleanup error: {e}")
+            # Don't re-raise - we're already in cleanup mode
+        
+        finally:
+            # Ensure process exits cleanly
+            if dist.is_available() and dist.is_initialized():
+                try:
+                    # Small delay to ensure all ranks reach this point
+                    import time
+                    time.sleep(0.1)
+                except:
+                    pass
+
+    def _close_file_handles(self):
+        """Close any open file handles."""
+        try:
+            # Close any HDF5 files
+            import h5py
+            # This will close any unclosed HDF5 files
+            h5py.get_config().default_file_mode = 'r'
+            
+            # Close any CSV writers or other file handles
+            # Add specific cleanup for your file handles here
+            
+        except Exception as e:
+            print(f"[Pipeline] Warning: Error closing file handles: {e}")

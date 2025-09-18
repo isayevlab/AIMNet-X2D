@@ -203,6 +203,76 @@ class SAENormalizer:
         
         return target_array.tolist()
     
+    def inverse_transform(self, 
+                         smiles_list: List[str], 
+                         predictions: Union[np.ndarray, List[float], List[List[float]]]) -> np.ndarray:
+        """
+        Apply inverse SAE transformation to predictions.
+        
+        This adds back the atomic contributions that were subtracted during training.
+        
+        Args:
+            smiles_list: SMILES strings corresponding to predictions
+            predictions: Model predictions on SAE-normalized scale
+            
+        Returns:
+            Predictions converted back to original scale
+        """
+        if not self.is_fitted:
+            raise ValueError("Must call fit() before inverse_transform()")
+        
+        # Convert predictions to numpy array
+        if isinstance(predictions, list):
+            pred_array = np.array(predictions, dtype=np.float64)
+        else:
+            pred_array = np.array(predictions, dtype=np.float64)
+        
+        # Ensure proper shape
+        if len(pred_array.shape) == 1:
+            pred_array = pred_array.reshape(-1, 1)
+        
+        # Parse atomic numbers for all SMILES
+        atomic_nums = []
+        for smi in smiles_list:
+            nums = partial_parse_atomic_numbers(smi)
+            atomic_nums.append(nums)
+        
+        # Apply inverse transformation
+        if self.task_type == "regression":
+            return self._inverse_transform_single_task(atomic_nums, pred_array)
+        elif self.task_type == "multitask":
+            return self._inverse_transform_multitask(atomic_nums, pred_array)
+        else:
+            raise ValueError(f"Unknown task_type: {self.task_type}")
+    
+    def _inverse_transform_single_task(self, atomic_nums: List, pred_array: np.ndarray) -> np.ndarray:
+        """Apply inverse SAE transformation for single-task."""
+        sae_dict = self.sae_statistics["regression"]
+        result = pred_array.copy()
+        
+        for i, nums in enumerate(atomic_nums):
+            if nums is not None:
+                shift = sum(sae_dict.get(n, 0.0) for n in nums)
+                result[i] += shift
+        
+        return result
+    
+    def _inverse_transform_multitask(self, atomic_nums: List, pred_array: np.ndarray) -> np.ndarray:
+        """Apply inverse SAE transformation for multitask."""
+        result = pred_array.copy()
+        
+        # Apply inverse transformation for each subtask
+        for subtask_idx, sae_dict in self.sae_statistics.items():
+            if subtask_idx >= result.shape[1]:
+                continue
+                
+            for i, nums in enumerate(atomic_nums):
+                if nums is not None:
+                    shift = sum(sae_dict.get(n, 0.0) for n in nums)
+                    result[i, subtask_idx] += shift
+        
+        return result
+    
     def fit_transform(self, 
                      train_smiles: List[str], 
                      train_targets: Union[List[float], List[List[float]]], 
@@ -210,7 +280,6 @@ class SAENormalizer:
         """Fit SAE on training data and transform it."""
         self.fit(train_smiles, train_targets, subtasks)
         return self.transform(train_smiles, train_targets)
-
 
 class StandardScaler:
     """
@@ -364,20 +433,32 @@ class PreprocessingPipeline:
         else:
             return current_targets
     
-    def inverse_transform(self, transformed_targets: np.ndarray) -> np.ndarray:
+    def inverse_transform(self, 
+                     smiles_list: List[str], 
+                     transformed_targets: np.ndarray) -> np.ndarray:
         """
-        Apply inverse transformations (standard scaling only - SAE is not reversible).
+        Apply inverse transformations to convert predictions back to original scale.
+        
+        Order: Standard Scaling (inverse) → SAE (inverse)
         
         Args:
-            transformed_targets: Scaled targets from model predictions
+            smiles_list: SMILES strings corresponding to predictions
+            transformed_targets: Predictions from model (on transformed scale)
             
         Returns:
-            Targets with standard scaling reversed (SAE shift remains)
+            Predictions on original scale
         """
-        if self.standard_scaler is not None:
-            return self.standard_scaler.inverse_transform(transformed_targets)
-        else:
-            return transformed_targets
+        current_predictions = transformed_targets.copy()
+        
+        # Step 1: Inverse standard scaling (if applied)
+        if self.standard_scaler is not None and self.standard_scaler.is_fitted:
+            current_predictions = self.standard_scaler.inverse_transform(current_predictions)
+        
+        # Step 2: Inverse SAE transformation (if applied)
+        if self.sae_normalizer is not None and self.sae_normalizer.is_fitted:
+            current_predictions = self.sae_normalizer.inverse_transform(smiles_list, current_predictions)
+        
+        return current_predictions
     
     def fit_transform(self, 
                      train_smiles: List[str], 

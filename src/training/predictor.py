@@ -20,7 +20,7 @@ def predict_gnn(
     data_loader,
     device,
     task_type='regression',
-    std_scaler=None,
+    preprocessing_pipeline=None,  # CHANGED: was std_scaler
     is_ddp=False
 ):
     """
@@ -31,7 +31,7 @@ def predict_gnn(
         data_loader: DataLoader with input data
         device: Device to run inference on
         task_type: Type of task ('regression' or 'multitask')
-        std_scaler: Optional standard scaler
+        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         is_ddp: Whether DDP is enabled
         
     Returns:
@@ -39,6 +39,7 @@ def predict_gnn(
     """
     model.eval()
     all_preds = []
+    all_smiles = []
 
     for batch_idx, batch in enumerate(data_loader):
         if batch is None:
@@ -68,19 +69,105 @@ def predict_gnn(
         predictions = _process_evidential_outputs(outputs, model)
         
         all_preds.append(predictions.detach().cpu().numpy())
+        all_smiles.extend(batch.smiles_list)
 
     if len(all_preds) == 0:
         local_preds = np.array([])
     else:
         local_preds = np.concatenate(all_preds, axis=0)
+        local_smiles = all_smiles
         
-        # Ensure proper shape for scaling
+        # Ensure proper shape for inverse transform
         if task_type in ['regression', 'multitask'] and len(local_preds.shape) == 1:
             local_preds = local_preds.reshape(-1, 1)
             
-        # Apply inverse scaling if needed
-        if std_scaler is not None and task_type in ['regression', 'multitask']:
-            local_preds = std_scaler.inverse_transform(local_preds)
+        # Apply complete inverse preprocessing
+        if preprocessing_pipeline is not None and task_type in ['regression', 'multitask']:
+            local_preds = preprocessing_pipeline.inverse_transform(
+                smiles_list=local_smiles,
+                transformed_targets=local_preds
+            )
+
+    # If DDP is enabled, combine predictions across all ranks
+    if is_ddp and dist.is_initialized():
+        return _combine_ddp_predictions(local_preds, device)
+    else:
+        return local_preds
+
+
+@torch.no_grad()
+def predict_gnn(
+    model,
+    data_loader,
+    device,
+    task_type='regression',
+    preprocessing_pipeline=None,  # CHANGED: was std_scaler
+    is_ddp=False
+):
+    """
+    Returns predictions in CPU numpy form.
+
+    Args:
+        model: Model to use for prediction
+        data_loader: DataLoader with input data
+        device: Device to run inference on
+        task_type: Type of task ('regression' or 'multitask')
+        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
+        is_ddp: Whether DDP is enabled
+        
+    Returns:
+        Array of predictions for this rank's portion of the dataset
+    """
+    model.eval()
+    all_preds = []
+    all_smiles = []
+
+    for batch_idx, batch in enumerate(data_loader):
+        if batch is None:
+            continue
+            
+        # Prepare batch data
+        batch_multi_hop_edges = batch.multi_hop_edge_indices.to(device)
+        batch_indices = batch.batch_indices.to(device)
+        batch_atom_features = {k: v.to(device) for k, v in batch.atom_features_map.items()}
+        total_charges = batch.total_charges.to(device)
+        tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
+        cis_indices = batch.final_cis_tensor.to(device)
+        trans_indices = batch.final_trans_tensor.to(device)
+
+        # Forward pass
+        outputs, _, _ = model(
+            batch_atom_features,
+            batch_multi_hop_edges,
+            batch_indices,
+            total_charges,
+            tetrahedral_indices,
+            cis_indices,
+            trans_indices
+        )
+
+        # Process evidential outputs to get predictions
+        predictions = _process_evidential_outputs(outputs, model)
+        
+        all_preds.append(predictions.detach().cpu().numpy())
+        all_smiles.extend(batch.smiles_list)
+
+    if len(all_preds) == 0:
+        local_preds = np.array([])
+    else:
+        local_preds = np.concatenate(all_preds, axis=0)
+        local_smiles = all_smiles
+        
+        # Ensure proper shape for inverse transform
+        if task_type in ['regression', 'multitask'] and len(local_preds.shape) == 1:
+            local_preds = local_preds.reshape(-1, 1)
+            
+        # Apply complete inverse preprocessing
+        if preprocessing_pipeline is not None and task_type in ['regression', 'multitask']:
+            local_preds = preprocessing_pipeline.inverse_transform(
+                smiles_list=local_smiles,
+                transformed_targets=local_preds
+            )
 
     # If DDP is enabled, combine predictions across all ranks
     if is_ddp and dist.is_initialized():
@@ -96,7 +183,7 @@ def predict_with_mc_dropout(
     device,
     num_samples=30,
     task_type='regression',
-    std_scaler=None,
+    preprocessing_pipeline=None,  # CHANGED: was std_scaler
     is_ddp=False
 ):
     """
@@ -108,7 +195,7 @@ def predict_with_mc_dropout(
         device: Device to run inference on
         num_samples: Number of MC dropout samples
         task_type: Type of task ('regression' or 'multitask')
-        std_scaler: Optional standard scaler
+        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         is_ddp: Whether DDP is enabled
         
     Returns:
@@ -129,6 +216,8 @@ def predict_with_mc_dropout(
         model.apply(enable_dropout)
     
     all_predictions = []
+    smiles_collected = False
+    all_smiles = []
     
     # Progress tracking
     is_main = not is_ddp or safe_get_rank() == 0
@@ -136,6 +225,7 @@ def predict_with_mc_dropout(
     # Add tqdm for Monte Carlo samples
     for sample_idx in tqdm.tqdm(range(num_samples), desc="MC Dropout Samples", disable=not is_main):
         sample_preds = []
+        sample_smiles = []
         
         # Use a nested tqdm for batches
         batch_iterator = tqdm.tqdm(
@@ -149,6 +239,10 @@ def predict_with_mc_dropout(
             if batch is None:
                 continue
                 
+            # Collect SMILES only once
+            if not smiles_collected:
+                sample_smiles.extend(batch.smiles_list)
+            
             # Prepare batch data
             batch_multi_hop_edges = batch.multi_hop_edge_indices.to(device)
             batch_indices = batch.batch_indices.to(device)
@@ -174,17 +268,25 @@ def predict_with_mc_dropout(
             
             sample_preds.append(outputs.detach().cpu().numpy())
         
+        # Store SMILES from first sample
+        if not smiles_collected:
+            all_smiles = sample_smiles
+            smiles_collected = True
+        
         if len(sample_preds) > 0:
             # Concatenate all batch predictions for this MC sample
             sample_pred_array = np.concatenate(sample_preds, axis=0)
             
-            # Ensure proper shape for scaling
+            # Ensure proper shape for inverse transform
             if task_type in ['regression', 'multitask'] and len(sample_pred_array.shape) == 1:
                 sample_pred_array = sample_pred_array.reshape(-1, 1)
             
-            # Apply inverse scaling if needed
-            if std_scaler is not None and task_type in ['regression', 'multitask']:
-                sample_pred_array = std_scaler.inverse_transform(sample_pred_array)
+            # Apply complete inverse preprocessing
+            if preprocessing_pipeline is not None and task_type in ['regression', 'multitask']:
+                sample_pred_array = preprocessing_pipeline.inverse_transform(
+                    smiles_list=all_smiles,
+                    transformed_targets=sample_pred_array
+                )
                 
             all_predictions.append(sample_pred_array)
     
@@ -208,7 +310,7 @@ def predict_with_mc_dropout(
 
 
 @torch.no_grad()
-def predict_gnn_with_smiles(model, data_loader, device, task_type, std_scaler=None, is_ddp=False):
+def predict_gnn_with_smiles(model, data_loader, device, task_type, preprocessing_pipeline=None, is_ddp=False):
     """
     Get predictions with corresponding SMILES strings.
     
@@ -217,7 +319,7 @@ def predict_gnn_with_smiles(model, data_loader, device, task_type, std_scaler=No
         data_loader: DataLoader with input data
         device: Device to run inference on
         task_type: Type of task ('regression' or 'multitask')
-        std_scaler: Optional standard scaler
+        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         is_ddp: Whether DDP is enabled
         
     Returns:
@@ -256,7 +358,6 @@ def predict_gnn_with_smiles(model, data_loader, device, task_type, std_scaler=No
 
         preds_np = outputs.detach().cpu().numpy()
         all_preds.append(preds_np)
-        # "batch.smiles_list" contains the SMILES strings for this batch
         all_smiles.extend(batch.smiles_list)
 
     if len(all_preds) == 0:
@@ -264,13 +365,16 @@ def predict_gnn_with_smiles(model, data_loader, device, task_type, std_scaler=No
 
     preds_array = np.concatenate(all_preds, axis=0)
     
-    # Ensure proper shape for scaling
+    # Ensure proper shape for inverse transform
     if task_type in ['regression', 'multitask'] and len(preds_array.shape) == 1:
         preds_array = preds_array.reshape(-1, 1)
     
-    # Apply inverse scaling if needed
-    if std_scaler is not None and task_type in ["regression", "multitask"]:
-        preds_array = std_scaler.inverse_transform(preds_array)
+    # Apply complete inverse preprocessing
+    if preprocessing_pipeline is not None and task_type in ["regression", "multitask"]:
+        preds_array = preprocessing_pipeline.inverse_transform(
+            smiles_list=all_smiles,
+            transformed_targets=preds_array
+        )
 
     # Note: For DDP, SMILES collection would need special handling
     # This function is typically used for single-process inference
@@ -282,14 +386,13 @@ def predict_gnn_with_smiles(model, data_loader, device, task_type, std_scaler=No
 
     return preds_array, all_smiles
 
-
 @torch.no_grad()
 def predict_evidential_with_uncertainty(
     model,
     data_loader,
     device,
     task_type='regression',
-    std_scaler=None,
+    preprocessing_pipeline=None,  # CHANGED: was std_scaler
     is_ddp=False
 ):
     """
@@ -300,7 +403,7 @@ def predict_evidential_with_uncertainty(
         data_loader: DataLoader with input data
         device: Device to run inference on
         task_type: Type of task ('regression' or 'multitask')
-        std_scaler: Optional standard scaler
+        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         is_ddp: Whether DDP is enabled
         
     Returns:
@@ -309,11 +412,15 @@ def predict_evidential_with_uncertainty(
     model.eval()
     all_preds = []
     all_uncertainties = []
+    all_smiles = []
 
     for batch in data_loader:
         if batch is None:
             continue
             
+        # Collect SMILES for SAE inverse transform
+        all_smiles.extend(batch.smiles_list)
+        
         # Prepare batch data
         batch_multi_hop_edges = batch.multi_hop_edge_indices.to(device)
         batch_indices = batch.batch_indices.to(device)
@@ -348,14 +455,17 @@ def predict_evidential_with_uncertainty(
         local_preds = np.concatenate(all_preds, axis=0)
         local_uncertainties = np.concatenate(all_uncertainties, axis=0)
         
-        # Ensure proper shape for scaling
+        # Ensure proper shape for inverse transform
         if task_type in ['regression', 'multitask'] and len(local_preds.shape) == 1:
             local_preds = local_preds.reshape(-1, 1)
             local_uncertainties = local_uncertainties.reshape(-1, 1)
         
-        # Apply inverse scaling only to predictions (not uncertainties)
-        if std_scaler is not None and task_type in ['regression', 'multitask']:
-            local_preds = std_scaler.inverse_transform(local_preds)
+        # Apply complete inverse preprocessing (including SAE)
+        if preprocessing_pipeline is not None and task_type in ['regression', 'multitask']:
+            local_preds = preprocessing_pipeline.inverse_transform(
+                smiles_list=all_smiles,
+                transformed_targets=local_preds
+            )
 
     # Handle DDP if needed
     if is_ddp and dist.is_initialized():
@@ -482,7 +592,7 @@ def predict_with_uncertainty_estimation(
     uncertainty_method='mc_dropout',
     num_samples=30,
     task_type='regression',
-    std_scaler=None,
+    preprocessing_pipeline=None,  # CHANGED: was std_scaler
     is_ddp=False
 ):
     """
@@ -495,7 +605,7 @@ def predict_with_uncertainty_estimation(
         uncertainty_method: Method for uncertainty estimation ('mc_dropout', 'evidential')
         num_samples: Number of MC dropout samples (ignored for evidential)
         task_type: Type of task ('regression' or 'multitask')
-        std_scaler: Optional standard scaler
+        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         is_ddp: Whether DDP is enabled
         
     Returns:
@@ -508,15 +618,14 @@ def predict_with_uncertainty_estimation(
     
     if uncertainty_method == 'evidential' or loss_function == 'evidential':
         return predict_evidential_with_uncertainty(
-            model, data_loader, device, task_type, std_scaler, is_ddp
+            model, data_loader, device, task_type, preprocessing_pipeline, is_ddp
         )
     elif uncertainty_method == 'mc_dropout':
         return predict_with_mc_dropout(
-            model, data_loader, device, num_samples, task_type, std_scaler, is_ddp
+            model, data_loader, device, num_samples, task_type, preprocessing_pipeline, is_ddp
         )
     else:
         raise ValueError(f"Unsupported uncertainty method: {uncertainty_method}")
-
 
 @torch.no_grad()
 def predict_batch_with_processing(
@@ -524,7 +633,7 @@ def predict_batch_with_processing(
     batch,
     device,
     task_type='regression',
-    std_scaler=None,
+    preprocessing_pipeline=None,
     return_uncertainty=False,
     uncertainty_method='evidential'
 ):
@@ -539,7 +648,7 @@ def predict_batch_with_processing(
         batch: Single batch of data
         device: Device to run inference on
         task_type: Type of task ('regression' or 'multitask')
-        std_scaler: Optional standard scaler
+        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         return_uncertainty: Whether to return uncertainty estimates
         uncertainty_method: Method for uncertainty estimation
         
@@ -584,11 +693,17 @@ def predict_batch_with_processing(
         predictions_np = predictions.detach().cpu().numpy()
         uncertainties_np = None
     
-    # Apply inverse scaling to predictions (not uncertainties)
-    if std_scaler is not None and task_type in ['regression', 'multitask']:
+    # Apply complete inverse preprocessing (standard scaling + SAE)
+    if preprocessing_pipeline is not None:
+        # Ensure proper shape
         if len(predictions_np.shape) == 1:
             predictions_np = predictions_np.reshape(-1, 1)
-        predictions_np = std_scaler.inverse_transform(predictions_np)
+        
+        # Apply inverse preprocessing using SMILES from batch
+        predictions_np = preprocessing_pipeline.inverse_transform(
+            smiles_list=batch.smiles_list,
+            transformed_targets=predictions_np
+        )
     
     if return_uncertainty:
         return predictions_np, uncertainties_np

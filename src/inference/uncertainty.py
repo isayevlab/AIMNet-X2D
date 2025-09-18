@@ -5,7 +5,7 @@ Uncertainty estimation for inference.
 import torch
 import torch.nn as nn
 import numpy as np
-from typing import Tuple, List, Optional, Callable
+from typing import Tuple, List, Optional, Callable, Union
 from tqdm import tqdm
 
 from utils.distributed import safe_get_rank
@@ -26,7 +26,6 @@ class UncertaintyEstimator:
             Tuple of (predictions, uncertainties)
         """
         raise NotImplementedError
-
 
 class MCDropoutPredictor(UncertaintyEstimator):
     """Monte Carlo Dropout for uncertainty estimation."""
@@ -60,6 +59,8 @@ class MCDropoutPredictor(UncertaintyEstimator):
         self._enable_dropout()
         
         all_sample_predictions = []
+        smiles_collected = False
+        all_smiles = []
         
         # Progress bar for MC samples
         sample_iterator = range(self.num_samples)
@@ -69,15 +70,31 @@ class MCDropoutPredictor(UncertaintyEstimator):
         for sample_idx in sample_iterator:
             sample_predictions = self._single_forward_pass(
                 data_loader, 
-                embedding_callback if sample_idx == 0 else None  # Only extract embeddings on first pass
+                embedding_callback if sample_idx == 0 else None,  # Only extract embeddings on first pass
+                collect_smiles=(not smiles_collected)
             )
+            
+            # Collect SMILES from first sample
+            if not smiles_collected and len(sample_predictions) > 1:
+                all_smiles = sample_predictions[1]  # SMILES list
+                sample_predictions = sample_predictions[0]  # Predictions only
+                smiles_collected = True
+            elif isinstance(sample_predictions, tuple):
+                sample_predictions = sample_predictions[0]  # Just predictions
             
             if len(sample_predictions) > 0:
                 sample_array = np.concatenate(sample_predictions, axis=0)
                 
+                # Ensure proper shape
+                if len(sample_array.shape) == 1:
+                    sample_array = sample_array.reshape(-1, 1)
+                
                 # Apply inverse preprocessing if needed
                 if preprocessing_pipeline is not None:
-                    sample_array = preprocessing_pipeline.inverse_transform(sample_array)
+                    sample_array = preprocessing_pipeline.inverse_transform(
+                        smiles_list=all_smiles,
+                        transformed_targets=sample_array
+                    )
                 
                 all_sample_predictions.append(sample_array)
         
@@ -101,24 +118,19 @@ class MCDropoutPredictor(UncertaintyEstimator):
         else:
             self.model.apply(enable_dropout_fn)
     
-    def _single_forward_pass(self, data_loader, embedding_callback: Optional[Callable] = None, show_progress: bool = False) -> List[np.ndarray]:
+    def _single_forward_pass(self, data_loader, embedding_callback: Optional[Callable] = None, collect_smiles: bool = False) -> Union[List[np.ndarray], Tuple[List[np.ndarray], List[str]]]:
         """Perform a single forward pass through the data."""
         predictions = []
-        
-        # Add progress bar for MC dropout batches
-        batch_iterator = data_loader
-        if show_progress:
-            batch_iterator = tqdm(
-                data_loader, 
-                desc="MC dropout batches", 
-                unit="batch",
-                leave=False
-            )
+        smiles_list = [] if collect_smiles else None
         
         with torch.no_grad():
-            for batch in batch_iterator:
+            for batch in data_loader:
                 if batch is None:
                     continue
+                
+                # Collect SMILES if requested
+                if collect_smiles:
+                    smiles_list.extend(batch.smiles_list)
                 
                 # Extract embeddings if callback provided
                 if embedding_callback is not None:
@@ -146,8 +158,10 @@ class MCDropoutPredictor(UncertaintyEstimator):
                 
                 predictions.append(outputs.detach().cpu().numpy())
         
-        return predictions
-
+        if collect_smiles:
+            return predictions, smiles_list
+        else:
+            return predictions
 
 class DeterministicPredictor:
     """Standard deterministic prediction without uncertainty."""
@@ -177,6 +191,7 @@ class DeterministicPredictor:
         """
         self.model.eval()
         predictions = []
+        all_smiles = []  # Collect SMILES for SAE inverse transform
         
         # Add progress bar for batch processing
         batch_iterator = data_loader
@@ -192,6 +207,9 @@ class DeterministicPredictor:
             for batch in batch_iterator:
                 if batch is None:
                     continue
+                
+                # Collect SMILES for SAE inverse transform
+                all_smiles.extend(batch.smiles_list)
                 
                 # Extract embeddings if callback provided
                 if embedding_callback is not None:
@@ -221,9 +239,18 @@ class DeterministicPredictor:
         
         if predictions:
             all_preds = np.concatenate(predictions, axis=0)
-            # Apply inverse preprocessing
+            
+            # Ensure proper shape for inverse transform
+            if len(all_preds.shape) == 1:
+                all_preds = all_preds.reshape(-1, 1)
+            
+            # Apply complete inverse preprocessing (including SAE)
             if preprocessing_pipeline is not None:
-                all_preds = preprocessing_pipeline.inverse_transform(all_preds)
+                all_preds = preprocessing_pipeline.inverse_transform(
+                    smiles_list=all_smiles,
+                    transformed_targets=all_preds
+                )
+            
             return all_preds
         
         return np.array([])

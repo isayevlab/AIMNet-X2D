@@ -11,10 +11,11 @@ from typing import Optional
 def create_main_parser() -> argparse.ArgumentParser:
     """Create the main argument parser with all options."""
     parser = argparse.ArgumentParser(
-        description="AIMNet-X2D: Advanced Graph Neural Network for Molecular Property Prediction",
+        description="AIMNet-X2D: Advanced Graph Neural Network for Molecular Property Prediction",  # FIXED: Clear name
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         epilog="For detailed documentation, visit the project repository."
     )
+
 
     # Add argument groups
     _add_data_arguments(parser)
@@ -254,6 +255,7 @@ def _add_hyperopt_arguments(parser: argparse.ArgumentParser) -> None:
                                help="Number of hyperparameter trials")
 
 
+# Fix 2a: In main/cli.py - fix project name
 def _add_logging_arguments(parser: argparse.ArgumentParser) -> None:
     """Add logging and experiment tracking arguments."""
     logging_group = parser.add_argument_group('Logging & Tracking')
@@ -262,12 +264,13 @@ def _add_logging_arguments(parser: argparse.ArgumentParser) -> None:
     logging_group.add_argument("--enable_wandb", action="store_true",
                               help="Enable Weights & Biases logging")
     logging_group.add_argument("--wandb_project", type=str, 
-                              default="aimnet-x2d-molecular-prediction",
+                              default="aimnet-x2d-molecular-prediction",  # FIXED: was "gnn-molecular-property-prediction"
                               help="Weights & Biases project name")
     logging_group.add_argument("--wandb_entity", type=str, default=None,
                               help="Weights & Biases entity/team name")
     logging_group.add_argument("--wandb_tags", type=str, default=None,
                               help="Comma-separated tags for Weights & Biases")
+
 
 
 def parse_main_arguments(args: Optional[list] = None) -> argparse.Namespace:

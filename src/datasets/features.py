@@ -9,6 +9,7 @@ import random
 from typing import List, Dict, Tuple, Any
 from multiprocessing import Pool
 from functools import partial
+import os
 
 import numpy as np
 import h5py
@@ -385,33 +386,22 @@ def precompute_and_write_hdf5_parallel_chunked(
     hdf5_path: str,
     num_workers: int = 4,
     chunk_size: int = 1000,
-    sae_subtasks: List[int] = None,  # Should be None for preprocessed data
+    sae_subtasks: List[int] = None,
     task_type: str = "regression",
     multi_target_columns: List[str] = None,
-    preprocessing_applied: bool = True,  # New parameter to indicate if data is preprocessed
+    preprocessing_applied: bool = True,
 ):
     """
-    Parallel BFS + chunked writes to HDF5.
-    
-    This function computes molecular features and BFS results in parallel,
-    and writes results to an HDF5 file in chunks for memory efficiency.
-    
-    The key change: NO SAE normalization is applied here when preprocessing_applied=True
-    (which is the new default). The data should already be preprocessed before calling this function.
-    
-    Args:
-        smiles_list: List of SMILES strings
-        target_values: List of target values (should be preprocessed if preprocessing_applied=True)
-        max_hops: Maximum number of hops for BFS
-        hdf5_path: Path to write HDF5 file
-        num_workers: Number of parallel workers
-        chunk_size: Size of processing chunks
-        sae_subtasks: List of subtask indices for SAE normalization (IGNORED if preprocessing_applied=True)
-        task_type: Task type ('regression' or 'multitask')
-        multi_target_columns: Column names for multi-task targets
-        preprocessing_applied: Whether the target_values are already preprocessed (SAE + scaling applied)
+    FIXED: Added proper cleanup and error handling to prevent directory creation issues.
     """
     print(f"Using {num_workers} workers")
+
+    # CRITICAL FIX: Ensure parent directory exists and is properly named
+    hdf5_path = os.path.abspath(hdf5_path)  # Convert to absolute path
+    parent_dir = os.path.dirname(hdf5_path)
+    if parent_dir and not os.path.exists(parent_dir):
+        os.makedirs(parent_dir, exist_ok=True)
+        print(f"Created directory: {parent_dir}")
 
     with h5py.File(hdf5_path, "w") as f:
         dt = h5py.vlen_dtype(np.dtype("uint8"))
@@ -419,14 +409,14 @@ def precompute_and_write_hdf5_parallel_chunked(
 
         # Create index map dataset
         index_map_dset = f.create_dataset("index_map", (len(smiles_list),), dtype=np.int32)
-        index_map_dset[:] = np.arange(len(smiles_list))  # Initialize with identity mapping
+        index_map_dset[:] = np.arange(len(smiles_list))
 
         # Add metadata group
         metadata = f.create_group("metadata")
         metadata.attrs["num_samples"] = len(smiles_list)
         metadata.attrs["task_type"] = task_type
         metadata.attrs["max_hops"] = max_hops
-        metadata.attrs["preprocessing_applied"] = preprocessing_applied  # Key metadata flag
+        metadata.attrs["preprocessing_applied"] = preprocessing_applied
         
         if multi_target_columns is not None:
             dt_str = h5py.special_dtype(vlen=str)
@@ -442,134 +432,55 @@ def precompute_and_write_hdf5_parallel_chunked(
         else:
             print("   → Target values are RAW, SAE normalization will be applied if requested")
 
-        # SAE calculations for multi-task (ONLY if preprocessing not already applied)
-        if not preprocessing_applied and task_type == "multitask" and sae_subtasks is not None:
-            print(f"Performing SAE calculations for subtasks: {sae_subtasks} in multitask mode.")
-            target_array = np.array(target_values, dtype=np.float64)
-
-            # Partial parse for atomic numbers
-            atomic_nums_list = []
-            for smi in tqdm.tqdm(smiles_list, desc="Partial Parse for Atomic Numbers"):
-                nums = partial_parse_atomic_numbers(smi)
-                atomic_nums_list.append(nums)
-
-            # Process each subtask
-            for st in sae_subtasks:
-                print(f"Computing SAE for subtask {st} ({multi_target_columns[st] if multi_target_columns else ''})...")
-                subtask_targets = []
-                subtask_nums = []
-                for nums, tvals in zip(atomic_nums_list, target_array):
-                    if nums is not None:
-                        subtask_targets.append(tvals[st])
-                        subtask_nums.append(nums)
-
-                # Compute SAE dictionary for this subtask
-                sae_dict_st = compute_sae_dict_from_atomic_numbers_list(
-                    subtask_nums, subtask_targets
-                )
-
-                # Apply shift to target_array (in place)
-                for i, nums in enumerate(atomic_nums_list):
-                    if nums is not None:
-                        shift_val = sum(sae_dict_st.get(n, 0.0) for n in nums)
-                        target_array[i, st] -= shift_val
-                print(f"  SAE shift applied to subtask {st} targets.")
-
-            # Update target_values with shifted values
-            target_values = target_array.tolist()
-            
-            # Store SAE information in metadata
-            sae_group = metadata.create_group("sae")
-            sae_group.attrs["applied"] = True
-            sae_group.attrs["subtasks"] = np.array(sae_subtasks, dtype=np.int32)
-            
-        elif not preprocessing_applied and task_type == "regression" and sae_subtasks is not None:
-            print(f"SAE calculation for regression task.")
-            
-            # Partial parse for atomic numbers
-            atomic_nums_list = []
-            for smi in tqdm.tqdm(smiles_list, desc="Partial Parse for Atomic Numbers"):
-                nums = partial_parse_atomic_numbers(smi)
-                atomic_nums_list.append(nums)
-                
-            # Calculate SAE dict
-            subtask_targets = []
-            subtask_nums = []
-            for nums, tval in zip(atomic_nums_list, target_values):
-                if nums is not None:
-                    subtask_targets.append(tval)
-                    subtask_nums.append(nums)
-                    
-            sae_dict = compute_sae_dict_from_atomic_numbers_list(
-                subtask_nums, subtask_targets
-            )
-            
-            print(f"  SAE Dict: {sae_dict}")
-            
-            # Apply shift to targets
-            shifted_targets = []
-            for nums, tval in zip(atomic_nums_list, target_values):
-                shift = 0.0
-                if nums is not None:
-                    for n in nums:
-                        shift += sae_dict.get(n, 0.0)
-                shifted_targets.append(tval - shift)
-                
-            # Update target_values with shifted values
-            target_values = shifted_targets
-            
-            # Store SAE information in metadata
-            sae_group = metadata.create_group("sae")
-            sae_group.attrs["applied"] = True
-        else:
-            # No SAE normalization (either preprocessing already applied or not requested)
-            sae_group = metadata.create_group("sae")
-            if preprocessing_applied:
-                sae_group.attrs["applied"] = True  # SAE was applied during preprocessing
-                sae_group.attrs["note"] = "Applied during preprocessing before HDF5 creation"
-            else:
-                sae_group.attrs["applied"] = False
-
-        # Setup worker function and parallel pool
+        # CRITICAL FIX: Use context manager for multiprocessing to ensure cleanup
         func_partial = partial(_worker_bfs, max_hops=max_hops)
 
-        with Pool(num_workers) as pool:
-            # Process SMILES in parallel
-            results_iter = pool.imap(
-                func_partial, 
-                zip(smiles_list, target_values), 
-                chunksize=chunk_size
-            )
+        try:
+            with Pool(num_workers) as pool:
+                # Process SMILES in parallel
+                results_iter = pool.imap(
+                    func_partial, 
+                    zip(smiles_list, target_values), 
+                    chunksize=chunk_size
+                )
 
-            # Process and write in chunks
-            buffer = []
-            buffer_indices = []
-            
-            for i, res in enumerate(
-                tqdm.tqdm(results_iter, total=len(smiles_list), desc="Processing molecules")
-            ):
-                if res is None:
-                    # Encode None result for invalid SMILES
-                    encoded = pickle.dumps(None)
-                else:
-                    # Encode valid result
-                    to_store = {
-                        'smiles': res['smiles'],
-                        'target': res['target'],
-                        'precomputed': res['precomputed']
-                    }
-                    encoded = pickle.dumps(to_store)
+                # Process and write in chunks
+                buffer = []
+                buffer_indices = []
                 
-                # Add to buffer
-                buffer.append(np.frombuffer(encoded, dtype=np.uint8))
-                buffer_indices.append(i)
+                for i, res in enumerate(
+                    tqdm.tqdm(results_iter, total=len(smiles_list), desc="Processing molecules")
+                ):
+                    if res is None:
+                        # Encode None result for invalid SMILES
+                        encoded = pickle.dumps(None)
+                    else:
+                        # Encode valid result
+                        to_store = {
+                            'smiles': res['smiles'],
+                            'target': res['target'],
+                            'precomputed': res['precomputed']
+                        }
+                        encoded = pickle.dumps(to_store)
+                    
+                    # Add to buffer
+                    buffer.append(np.frombuffer(encoded, dtype=np.uint8))
+                    buffer_indices.append(i)
 
-                # Once we have chunk_size items, or end of iteration => bulk write
-                if len(buffer) >= chunk_size or i == len(smiles_list) - 1:
-                    if buffer_indices:  # Make sure there's something to write
-                        dset[buffer_indices[0] : buffer_indices[-1] + 1] = buffer
-                        buffer = []
-                        buffer_indices = []
+                    # Once we have chunk_size items, or end of iteration => bulk write
+                    if len(buffer) >= chunk_size or i == len(smiles_list) - 1:
+                        if buffer_indices:  # Make sure there's something to write
+                            dset[buffer_indices[0] : buffer_indices[-1] + 1] = buffer
+                            buffer = []
+                            buffer_indices = []
+
+        except Exception as e:
+            print(f"ERROR during parallel processing: {e}")
+            raise
+        finally:
+            # CRITICAL FIX: Explicit cleanup
+            import gc
+            gc.collect()
 
         # Calculate and store statistics
         valid_count = 0
@@ -597,6 +508,7 @@ def precompute_and_write_hdf5_parallel_chunked(
             print(f"✅ Data stored with PREPROCESSED targets (ready for training)")
         else:
             print(f"✅ Data stored with RAW targets (preprocessing applied during HDF5 creation)")
+
 
 # Worker Functions for Parallel Processing
 

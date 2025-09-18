@@ -195,7 +195,7 @@ def train_gnn(
     mixed_precision=False,
     num_tasks=1,
     multitask_weights=None,
-    std_scaler=None,
+    preprocessing_pipeline=None,  # CHANGED: was std_scaler
     is_ddp=False,
     current_args=None
 ):
@@ -261,7 +261,7 @@ def train_gnn(
                 task_type=task_type,
                 mixed_precision=mixed_precision,
                 num_tasks=num_tasks,
-                std_scaler=std_scaler,
+                preprocessing_pipeline=preprocessing_pipeline,  # CHANGED: was std_scaler
                 is_ddp=is_ddp
             )
 
@@ -334,7 +334,6 @@ def train_gnn(
     torch.cuda.empty_cache()
 
     return model
-
 
 def _handle_epoch_end_fixed(
     model, val_metrics, best_val_loss, patience_counter, best_model_state,

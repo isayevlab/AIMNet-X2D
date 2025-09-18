@@ -97,17 +97,45 @@ def cleanup_trial_environment():
 
 def cleanup_temporary_files(args) -> None:
     """
-    Clean up temporary files created during execution.
-    
-    Args:
-        args: Command line arguments
+    FIXED: Clean up temporary files created during execution with better error handling.
     """
-    # Clean up trial-specific temporary directory if it exists
-    if hasattr(args, '_trial_temp_dir') and os.path.exists(args._trial_temp_dir):
-        try:
-            shutil.rmtree(args._trial_temp_dir)
-        except Exception as e:
-            print(f"WARNING: Failed to clean up temporary directory {args._trial_temp_dir}: {e}")
+    try:
+        # Clean up trial-specific temporary directory if it exists
+        if hasattr(args, '_trial_temp_dir') and os.path.exists(args._trial_temp_dir):
+            try:
+                shutil.rmtree(args._trial_temp_dir)
+                print(f"Cleaned up temporary directory: {args._trial_temp_dir}")
+            except Exception as e:
+                print(f"WARNING: Failed to clean up temporary directory {args._trial_temp_dir}: {e}")
+        
+        # CRITICAL FIX: Clean up any orphaned temporary directories
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        
+        # Look for directories starting with 'aimnet_trial_' or containing '???'
+        for item in os.listdir(temp_dir):
+            if item.startswith('aimnet_trial_') or item == '???':
+                orphan_path = os.path.join(temp_dir, item)
+                if os.path.isdir(orphan_path):
+                    try:
+                        shutil.rmtree(orphan_path)
+                        print(f"Cleaned up orphaned directory: {orphan_path}")
+                    except Exception as e:
+                        print(f"WARNING: Could not clean up {orphan_path}: {e}")
+        
+        # Clean up current working directory for any '???' folders
+        cwd = os.getcwd()
+        mystery_dir = os.path.join(cwd, '???')
+        if os.path.exists(mystery_dir):
+            try:
+                shutil.rmtree(mystery_dir)
+                print(f"Cleaned up mystery directory: {mystery_dir}")
+            except Exception as e:
+                print(f"WARNING: Could not clean up mystery directory: {e}")
+                
+    except Exception as e:
+        print(f"WARNING: Error during cleanup: {e}")
+
 
 
 def validate_trial_arguments(args) -> bool:
