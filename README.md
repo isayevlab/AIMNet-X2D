@@ -20,13 +20,6 @@ AIMNet-X2D is a Graph Neural Network-based model for molecular property predicti
 
 ## Installation
 
-### Requirements
-
-- Python 3.8+
-- PyTorch 1.10+
-- RDKit
-- CUDA (optional, for GPU acceleration)
-
 ### Setup
 
 1. Clone the repository:
