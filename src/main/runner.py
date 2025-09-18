@@ -715,7 +715,6 @@ def _create_and_setup_model(args, data_info: Dict[str, Any], device: torch.devic
     
     return model
 
-
 def _load_pretrained_weights(model: torch.nn.Module, args) -> None:
     """Load pretrained weights for transfer learning."""
     if not os.path.exists(args.transfer_learning):
@@ -733,15 +732,42 @@ def _load_pretrained_weights(model: torch.nn.Module, args) -> None:
     else:
         state_dict = pretrained_weights
     
-    # Load with strict=True to only allow full loading
-    model.load_state_dict(state_dict, strict=True)
+    # NEW: Handle different output dimensions for transfer learning
+    model_state = model.state_dict()
     
-    # Handle freezing
+    # Check if output layer dimensions match
+    output_layer_key = "output_layer.weight"
+    if output_layer_key in state_dict and output_layer_key in model_state:
+        pretrained_shape = state_dict[output_layer_key].shape
+        current_shape = model_state[output_layer_key].shape
+        
+        if pretrained_shape != current_shape:
+            if is_main_process():
+                print(f"Output dimension mismatch detected:")
+                print(f"  Pretrained: {pretrained_shape}")
+                print(f"  Current: {current_shape}")
+                print(f"  Excluding output layer from transfer learning")
+            
+            # Remove output layer and bias from pretrained weights
+            state_dict.pop("output_layer.weight", None)
+            state_dict.pop("output_layer.bias", None)
+    
+    # Load with strict=False to allow missing keys (output layer)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    
+    if is_main_process():
+        if missing_keys:
+            print(f"Missing keys (will use random initialization): {missing_keys}")
+        if unexpected_keys:
+            print(f"Unexpected keys (ignored): {unexpected_keys}")
+    
+    # Handle freezing - output layer will NOT be frozen since it wasn't loaded
     if args.freeze_pretrained:
         if is_main_process():
-            print("Freezing pretrained layers except output layer")
+            print("Freezing pretrained layers (output layer remains trainable)")
         
         for name, param in model.named_parameters():
+            # Don't freeze output layer - it needs to be trained from scratch
             if "output_layer" not in name:
                 param.requires_grad = False
     
@@ -755,7 +781,6 @@ def _load_pretrained_weights(model: torch.nn.Module, args) -> None:
         from utils.optimization import unfreeze_parameters
         unfreeze_patterns = [pattern.strip() for pattern in args.unfreeze_layers.split(',')]
         unfreeze_parameters(model, unfreeze_patterns)
-
 
 def _run_training(args, model: torch.nn.Module, data_loaders: Dict[str, Any], 
                  device: torch.device, is_ddp: bool, data_info: Dict[str, Any]) -> Dict[str, Any]:

@@ -104,7 +104,7 @@ def cleanup_temporary_files(args) -> None:
         if hasattr(args, '_trial_temp_dir') and os.path.exists(args._trial_temp_dir):
             try:
                 shutil.rmtree(args._trial_temp_dir)
-                print(f"Cleaned up temporary directory: {args._trial_temp_dir}")
+                print(f"Cleaned up temp files/directories: {args._trial_temp_dir}")
             except Exception as e:
                 print(f"WARNING: Failed to clean up temporary directory {args._trial_temp_dir}: {e}")
         

@@ -323,7 +323,6 @@ python main.py \
 | `--early_stopping` | Enable early stopping |
 | `--patience` | Early stopping patience |
 | `--lr_scheduler` | Learning rate scheduler |
-| `--mixed_precision` | Enable mixed precision training |
 | `--num_workers` | Number of data loading worker processes |
 | `--model_save_path` | Where to save the trained model |
 
