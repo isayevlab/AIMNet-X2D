@@ -911,7 +911,6 @@ def _extract_embeddings_if_requested(args, model: torch.nn.Module, data_loaders:
     
     return {"embeddings_path": args.embeddings_output_path}
 
-
 def _save_best_model(args, model: torch.nn.Module, preprocessing_pipeline, 
                     test_metrics: Dict[str, Any], is_ddp: bool) -> None:
     """Save the best model with COMPLETE preprocessing pipeline information."""
@@ -966,6 +965,10 @@ def _save_best_model(args, model: torch.nn.Module, preprocessing_pipeline,
                 "multi_target_columns": getattr(args, 'multi_target_columns', None),
                 "multitask_weights": getattr(args, 'multitask_weights', None),
             },
+            
+            # NEW: Save target column information for inference output naming
+            "target_column_name": getattr(args, 'target_column', 'target'),
+            "multi_target_column_names": getattr(args, 'multi_target_columns_list', None),
             
             # CRITICAL FIX: Complete preprocessing pipeline information
             "preprocessing_config": {

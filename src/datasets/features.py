@@ -165,6 +165,7 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
     """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
+        print(f"WARNING: Invalid SMILES could not be parsed: '{smiles}'")
         return None
 
     # Add H's and assign stereochemistry
@@ -172,7 +173,8 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
         mol = Chem.AddHs(mol)
         Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
         processed_smi = Chem.MolToSmiles(mol, isomericSmiles=True, allHsExplicit=True)
-    except:
+    except Exception as e:
+        print(f"WARNING: Failed to process SMILES '{smiles}': {e}")
         return None
 
     # 1) Multi-hop BFS edges
@@ -181,7 +183,8 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
         adj_list_numba = build_numba_adjacency_list(adj_matrix)
         edge_indices_list = compute_multi_hop_edges_bfs_numba(adj_list_numba, max_hops)
         multi_hop_edges = edge_indices_list
-    except:
+    except Exception as e:
+        print(f"WARNING: Failed to compute multi-hop edges for SMILES '{smiles}': {e}")
         return None
 
     # 2) Atom features
@@ -198,7 +201,8 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
                 'degree': degree,
                 'hybridization': hybridization,
             })
-    except:
+    except Exception as e:
+        print(f"WARNING: Failed to compute atom features for SMILES '{smiles}': {e}")
         return None
 
     # Store atomic numbers in a single array
@@ -207,84 +211,96 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
             [atom.GetAtomicNum() for atom in mol.GetAtoms()],
             dtype=np.int32
         )
-    except:
+    except Exception as e:
+        print(f"WARNING: Failed to extract atomic numbers for SMILES '{smiles}': {e}")
         return None
 
     # 3) Chiral centers
-    chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=True)
-    chiral_tensors = []
-    for center_idx, chirality in chiral_centers:
-        center_atom = mol.GetAtomWithIdx(center_idx)
-        neighbors = [nbr.GetIdx() for nbr in center_atom.GetNeighbors()]
-        chiral_tensors.append(np.array(neighbors, dtype=np.int32))
+    try:
+        chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=True)
+        chiral_tensors = []
+        for center_idx, chirality in chiral_centers:
+            center_atom = mol.GetAtomWithIdx(center_idx)
+            neighbors = [nbr.GetIdx() for nbr in center_atom.GetNeighbors()]
+            chiral_tensors.append(np.array(neighbors, dtype=np.int32))
+    except Exception as e:
+        print(f"WARNING: Failed to compute chiral centers for SMILES '{smiles}': {e}")
+        chiral_tensors = []
 
     # 4) Cis/Trans bonds
     cis_bonds_list = []
     trans_bonds_list = []
-    for bond in mol.GetBonds():
-        if bond.GetBondType() == Chem.BondType.DOUBLE:
-            stereo = bond.GetStereo()
-            if stereo not in [Chem.BondStereo.STEREOZ, Chem.BondStereo.STEREOE]:
-                # skip STEREONONE, STEREOANY, etc.
-                continue
+    try:
+        for bond in mol.GetBonds():
+            if bond.GetBondType() == Chem.BondType.DOUBLE:
+                stereo = bond.GetStereo()
+                if stereo not in [Chem.BondStereo.STEREOZ, Chem.BondStereo.STEREOE]:
+                    # skip STEREONONE, STEREOANY, etc.
+                    continue
 
-            start_atom = bond.GetBeginAtom()
-            end_atom = bond.GetEndAtom()
+                start_atom = bond.GetBeginAtom()
+                end_atom = bond.GetEndAtom()
 
-            # Build neighbor lists excluding the double-bond partner
-            start_neighbors = [nbr.GetIdx() for nbr in start_atom.GetNeighbors()
-                               if nbr.GetIdx() != end_atom.GetIdx()]
-            end_neighbors = [nbr.GetIdx() for nbr in end_atom.GetNeighbors()
-                               if nbr.GetIdx() != start_atom.GetIdx()]
+                # Build neighbor lists excluding the double-bond partner
+                start_neighbors = [nbr.GetIdx() for nbr in start_atom.GetNeighbors()
+                                   if nbr.GetIdx() != end_atom.GetIdx()]
+                end_neighbors = [nbr.GetIdx() for nbr in end_atom.GetNeighbors()
+                                   if nbr.GetIdx() != start_atom.GetIdx()]
 
-            # skip "symmetric" or near-symmetric bonds
-            if len(set(start_neighbors + end_neighbors)) < 4:
-                continue
+                # skip "symmetric" or near-symmetric bonds
+                if len(set(start_neighbors + end_neighbors)) < 4:
+                    continue
 
-            stereo_atoms = bond.GetStereoAtoms()
-            if len(stereo_atoms) != 2:
-                continue
+                stereo_atoms = bond.GetStereoAtoms()
+                if len(stereo_atoms) != 2:
+                    continue
 
-            s_high = stereo_atoms[0]
-            e_high = stereo_atoms[1]
+                s_high = stereo_atoms[0]
+                e_high = stereo_atoms[1]
 
-            # Identify the "low" substituent on each side
-            s_low_candidates = [x for x in start_neighbors if x != s_high]
-            if not s_low_candidates:
-                continue
-            s_low = min(s_low_candidates, key=lambda idx: mol.GetAtomWithIdx(idx).GetAtomicNum())
+                # Identify the "low" substituent on each side
+                s_low_candidates = [x for x in start_neighbors if x != s_high]
+                if not s_low_candidates:
+                    continue
+                s_low = min(s_low_candidates, key=lambda idx: mol.GetAtomWithIdx(idx).GetAtomicNum())
 
-            e_low_candidates = [x for x in end_neighbors if x != e_high]
-            if not e_low_candidates:
-                continue
-            e_low = min(e_low_candidates, key=lambda idx: mol.GetAtomWithIdx(idx).GetAtomicNum())
+                e_low_candidates = [x for x in end_neighbors if x != e_high]
+                if not e_low_candidates:
+                    continue
+                e_low = min(e_low_candidates, key=lambda idx: mol.GetAtomWithIdx(idx).GetAtomicNum())
 
-            if stereo == Chem.BondStereo.STEREOE:  # E => opposite
-                trans_bonds_list.append([s_high, e_high])  
-                trans_bonds_list.append([s_low, e_low])    
-                trans_bonds_list.append([e_high, s_high])  
-                trans_bonds_list.append([e_low, s_low])
+                if stereo == Chem.BondStereo.STEREOE:  # E => opposite
+                    trans_bonds_list.append([s_high, e_high])  
+                    trans_bonds_list.append([s_low, e_low])    
+                    trans_bonds_list.append([e_high, s_high])  
+                    trans_bonds_list.append([e_low, s_low])
 
-                # cross pairs = cis
-                cis_bonds_list.append([s_high, e_low])
-                cis_bonds_list.append([s_low, e_high])
-                cis_bonds_list.append([e_low, s_high])
-                cis_bonds_list.append([e_high, s_low])
+                    # cross pairs = cis
+                    cis_bonds_list.append([s_high, e_low])
+                    cis_bonds_list.append([s_low, e_high])
+                    cis_bonds_list.append([e_low, s_high])
+                    cis_bonds_list.append([e_high, s_low])
 
-            elif stereo == Chem.BondStereo.STEREOZ:  # Z => same
-                cis_bonds_list.append([s_high, e_high])
-                cis_bonds_list.append([s_low, e_low])
-                cis_bonds_list.append([e_high, s_high])
-                cis_bonds_list.append([e_low, s_low])
+                elif stereo == Chem.BondStereo.STEREOZ:  # Z => same
+                    cis_bonds_list.append([s_high, e_high])
+                    cis_bonds_list.append([s_low, e_low])
+                    cis_bonds_list.append([e_high, s_high])
+                    cis_bonds_list.append([e_low, s_low])
 
-                # cross pairs = trans
-                trans_bonds_list.append([s_high, e_low])
-                trans_bonds_list.append([s_low, e_high])
-                trans_bonds_list.append([e_low, s_high])
-                trans_bonds_list.append([e_high, s_low])
+                    # cross pairs = trans
+                    trans_bonds_list.append([s_high, e_low])
+                    trans_bonds_list.append([s_low, e_high])
+                    trans_bonds_list.append([e_low, s_high])
+                    trans_bonds_list.append([e_high, s_low])
+    except Exception as e:
+        print(f"WARNING: Failed to compute cis/trans bonds for SMILES '{smiles}': {e}")
 
     # 5) Total formal charge
-    total_charge = sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
+    try:
+        total_charge = sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
+    except Exception as e:
+        print(f"WARNING: Failed to compute total charge for SMILES '{smiles}': {e}")
+        total_charge = 0
 
     # 6) Convert atom features to index arrays
     mapped_atom_features = {
@@ -294,30 +310,34 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
         'hybridization': [],
     }
 
-    for feat in atom_features_list:
-        # Atomic number
-        a_type = feat['atom_type']
-        a_type_idx = ATOM_TYPES.index(a_type) if a_type in ATOM_TYPES else len(ATOM_TYPES)
-        
-        # Hydrogen count (create index on the fly)
-        h_count = feat['hydrogen_count']
-        h_count_idx = min(h_count, 8)  # Cap at 8 hydrogens (reasonable limit)
-        
-        # Degree
-        deg = feat['degree']
-        deg_idx = DEGREES.index(deg) if deg in DEGREES else len(DEGREES)
-        
-        # Hybridization
-        hyb = feat['hybridization']
-        hyb_idx = HYBRIDIZATIONS.index(hyb) if hyb in HYBRIDIZATIONS else len(HYBRIDIZATIONS)
+    try:
+        for feat in atom_features_list:
+            # Atomic number
+            a_type = feat['atom_type']
+            a_type_idx = ATOM_TYPES.index(a_type) if a_type in ATOM_TYPES else len(ATOM_TYPES)
+            
+            # Hydrogen count (create index on the fly)
+            h_count = feat['hydrogen_count']
+            h_count_idx = min(h_count, 8)  # Cap at 8 hydrogens (reasonable limit)
+            
+            # Degree
+            deg = feat['degree']
+            deg_idx = DEGREES.index(deg) if deg in DEGREES else len(DEGREES)
+            
+            # Hybridization
+            hyb = feat['hybridization']
+            hyb_idx = HYBRIDIZATIONS.index(hyb) if hyb in HYBRIDIZATIONS else len(HYBRIDIZATIONS)
 
-        mapped_atom_features['atom_type'].append(a_type_idx)
-        mapped_atom_features['hydrogen_count'].append(h_count_idx)
-        mapped_atom_features['degree'].append(deg_idx)
-        mapped_atom_features['hybridization'].append(hyb_idx)
+            mapped_atom_features['atom_type'].append(a_type_idx)
+            mapped_atom_features['hydrogen_count'].append(h_count_idx)
+            mapped_atom_features['degree'].append(deg_idx)
+            mapped_atom_features['hybridization'].append(hyb_idx)
 
-    for k in mapped_atom_features:
-        mapped_atom_features[k] = np.array(mapped_atom_features[k], dtype=np.int8)
+        for k in mapped_atom_features:
+            mapped_atom_features[k] = np.array(mapped_atom_features[k], dtype=np.int8)
+    except Exception as e:
+        print(f"WARNING: Failed to map atom features for SMILES '{smiles}': {e}")
+        return None
 
     chiral_tensors = [np.array(x, dtype=np.int32) for x in chiral_tensors]
     cis_bonds_tensors = [np.array(x, dtype=np.int32) for x in cis_bonds_list]
@@ -333,7 +353,6 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
         "atomic_numbers": atomic_numbers_array,
         "processed_smiles": processed_smi
     }
-
 
 def precompute_all_and_filter(
     smiles_list: List[str],

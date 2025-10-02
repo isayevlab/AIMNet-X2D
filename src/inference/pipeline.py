@@ -351,12 +351,44 @@ class InferencePipeline:
             f.write(','.join(header) + '\n')
         
         return output_file
-    
+
+
     def _generate_output_header(self) -> list:
-        """Generate output CSV header."""
-        header = [self.config.smiles_column]
+        """Generate output CSV header with proper column naming."""
+        header = []
         
-        # Determine number of output dimensions
+        # Always include SMILES
+        header.append(self.config.smiles_column)
+        
+        # Add ID column if input has one, otherwise add row_id
+        try:
+            input_df_sample = pd.read_csv(self.config.input_path, nrows=1)
+            if 'id' in input_df_sample.columns:
+                header.append('id')
+            elif 'ID' in input_df_sample.columns:
+                header.append('ID')
+            else:
+                header.append('row_id')  # Auto-generated row ID
+        except:
+            header.append('row_id')  # Fallback
+        
+        # Get target column names from saved model
+        target_column_name = 'target'
+        multi_target_names = None
+        
+        # Load from model artifact
+        model_path = self.config.model_path
+        if model_path and os.path.exists(model_path):
+            try:
+                model_artifact = torch.load(model_path, map_location='cpu')
+                if "hyperparams" in model_artifact:
+                    hyperparams = model_artifact['hyperparams']
+                    target_column_name = hyperparams.get('target_column_name', 'target')
+                    multi_target_names = hyperparams.get('multi_target_column_names', None)
+            except:
+                pass  # Use defaults
+        
+        # Determine number of output dimensions and column names
         if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
             loss_function = getattr(self.model.module, 'loss_function', 'l1')
             output_layer_size = self.model.module.output_layer.weight.shape[0]
@@ -370,25 +402,29 @@ class InferencePipeline:
         else:
             output_dim = output_layer_size
         
-        # Add prediction columns
+        # Add prediction columns with proper names
         if output_dim > 1:  # Multi-task
-            for i in range(output_dim):
-                header.append(f"prediction_{i}")
-                if self.config.mc_samples > 0:
-                    header.append(f"uncertainty_{i}")
-                elif loss_function == 'evidential':
-                    header.append(f"uncertainty_{i}")
+            if multi_target_names and len(multi_target_names) == output_dim:
+                # Use original target column names
+                for col_name in multi_target_names:
+                    header.append(f"{col_name}_prediction")
+                    if self.config.mc_samples > 0 or loss_function == 'evidential':
+                        header.append(f"{col_name}_uncertainty")
+            else:
+                # Fallback to generic names
+                for i in range(output_dim):
+                    header.append(f"{target_column_name}_{i}_prediction")
+                    if self.config.mc_samples > 0 or loss_function == 'evidential':
+                        header.append(f"{target_column_name}_{i}_uncertainty")
         else:  # Single task
-            header.append("prediction")
-            if self.config.mc_samples > 0:
-                header.append("uncertainty")
-            elif loss_function == 'evidential':
-                header.append("uncertainty")
+            header.append(f"{target_column_name}_prediction")
+            if self.config.mc_samples > 0 or loss_function == 'evidential':
+                header.append(f"{target_column_name}_uncertainty")
         
         return header
-    
+
     def _process_csv_chunks(self, start_line: int, end_line: Optional[int], output_file: str):
-        """Process CSV file in chunks."""
+        """Process CSV file in chunks with position tracking."""
         # Setup chunk reading
         skiprows = list(range(1, start_line)) if start_line > 1 else None
         nrows = None if end_line is None else (end_line - start_line)
@@ -400,8 +436,12 @@ class InferencePipeline:
             chunksize=self.config.chunk_size
         )
         
+        current_position = start_line - 1 if start_line > 1 else 0  # Track absolute position
+        
         for chunk_idx, chunk_df in enumerate(chunk_iterator):
+            self._current_chunk_start = current_position  # Store for ID generation
             self._process_single_chunk(chunk_df, chunk_idx, output_file)
+            current_position += len(chunk_df)
 
     def _process_single_chunk(self, chunk_df: pd.DataFrame, chunk_idx: int, output_file: str):
         """Process a single chunk of data."""
@@ -628,10 +668,10 @@ class InferencePipeline:
         except Exception as e:
             print(f"[Pipeline] Error creating data object for {smiles[:30]}...: {str(e)}")
             return None
-    
+
     def _write_chunk_results(self, chunk_df: pd.DataFrame, valid_data: dict, 
                             predictions: np.ndarray, uncertainties: np.ndarray, output_file: str):
-        """Write chunk results to output file."""
+        """Write chunk results with ID preservation and proper column naming."""
         if len(predictions) == 0:
             return
         
@@ -642,30 +682,66 @@ class InferencePipeline:
         
         has_uncertainties = (self.config.mc_samples > 0) or (loss_function == 'evidential')
         
+        # Determine ID column
+        id_column = None
+        if 'id' in chunk_df.columns:
+            id_column = 'id'
+        elif 'ID' in chunk_df.columns:
+            id_column = 'ID'
+        
+        # Create mapping from original indices to predictions
+        valid_indices = set(valid_data['indices'])
+        pred_idx_map = {orig_idx: pred_idx for pred_idx, orig_idx in enumerate(valid_data['indices'])}
+        
         with open(output_file, 'a') as f:
-            for i, (orig_idx, pred_idx) in enumerate(zip(valid_data['indices'], range(len(predictions)))):
+            # Process ALL rows from chunk_df to maintain correspondence
+            for orig_idx in range(len(chunk_df)):
                 smiles = chunk_df.iloc[orig_idx][self.config.smiles_column]
                 line = [smiles]
                 
-                # Add predictions
-                if len(predictions.shape) > 1 and predictions.shape[1] > 1:
-                    # Multi-task
-                    for j in range(predictions.shape[1]):
-                        line.append(str(predictions[pred_idx, j]))
-                        if has_uncertainties:
-                            line.append(str(uncertainties[pred_idx, j]))
+                # Add ID or row number
+                if id_column:
+                    line.append(str(chunk_df.iloc[orig_idx][id_column]))
                 else:
-                    # Single task
-                    pred_val = predictions[pred_idx].item() if len(predictions.shape) > 1 else predictions[pred_idx]
-                    line.append(str(pred_val))
-                    if has_uncertainties:
-                        unc_val = uncertainties[pred_idx].item() if len(uncertainties.shape) > 1 else uncertainties[pred_idx]
-                        line.append(str(unc_val))
+                    # Use chunk start + original index as row_id
+                    chunk_start = getattr(self, '_current_chunk_start', 0)
+                    line.append(str(chunk_start + orig_idx))
+                
+                if orig_idx in valid_indices:
+                    # Valid molecule - add predictions
+                    pred_idx = pred_idx_map[orig_idx]
+                    
+                    if len(predictions.shape) > 1 and predictions.shape[1] > 1:
+                        # Multi-task
+                        for j in range(predictions.shape[1]):
+                            line.append(str(predictions[pred_idx, j]))
+                            if has_uncertainties:
+                                line.append(str(uncertainties[pred_idx, j]))
+                    else:
+                        # Single task
+                        pred_val = predictions[pred_idx].item() if len(predictions.shape) > 1 else predictions[pred_idx]
+                        line.append(str(pred_val))
+                        if has_uncertainties:
+                            unc_val = uncertainties[pred_idx].item() if len(uncertainties.shape) > 1 else uncertainties[pred_idx]
+                            line.append(str(unc_val))
+                else:
+                    # Invalid molecule - add NaN values
+                    if len(predictions.shape) > 1 and predictions.shape[1] > 1:
+                        # Multi-task
+                        for j in range(predictions.shape[1]):
+                            line.append("NaN")
+                            if has_uncertainties:
+                                line.append("NaN")
+                    else:
+                        # Single task
+                        line.append("NaN")
+                        if has_uncertainties:
+                            line.append("NaN")
 
                 f.write(','.join(line) + '\n')
             
             f.flush()  # Ensure data is written immediately
-    
+
     def _combine_ddp_results(self, rank_output_file: str):
         """Combine results from all DDP ranks."""
         if not self.is_ddp:
