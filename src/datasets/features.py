@@ -411,12 +411,12 @@ def precompute_and_write_hdf5_parallel_chunked(
     preprocessing_applied: bool = True,
 ):
     """
-    FIXED: Added proper cleanup and error handling to prevent directory creation issues.
+    FIXED: Proper multiprocessing cleanup to prevent memory leaks.
     """
     print(f"Using {num_workers} workers")
 
     # CRITICAL FIX: Ensure parent directory exists and is properly named
-    hdf5_path = os.path.abspath(hdf5_path)  # Convert to absolute path
+    hdf5_path = os.path.abspath(hdf5_path)
     parent_dir = os.path.dirname(hdf5_path)
     if parent_dir and not os.path.exists(parent_dir):
         os.makedirs(parent_dir, exist_ok=True)
@@ -451,53 +451,62 @@ def precompute_and_write_hdf5_parallel_chunked(
         else:
             print("   → Target values are RAW, SAE normalization will be applied if requested")
 
-        # CRITICAL FIX: Use context manager for multiprocessing to ensure cleanup
+        # FIXED: Proper multiprocessing cleanup
         func_partial = partial(_worker_bfs, max_hops=max_hops)
-
+        
+        pool = None
         try:
-            with Pool(num_workers) as pool:
-                # Process SMILES in parallel
-                results_iter = pool.imap(
-                    func_partial, 
-                    zip(smiles_list, target_values), 
-                    chunksize=chunk_size
-                )
+            pool = Pool(num_workers)
+            
+            # Process SMILES in parallel
+            results_iter = pool.imap(
+                func_partial, 
+                zip(smiles_list, target_values), 
+                chunksize=chunk_size
+            )
 
-                # Process and write in chunks
-                buffer = []
-                buffer_indices = []
+            # Process and write in chunks
+            buffer = []
+            buffer_indices = []
+            
+            for i, res in enumerate(
+                tqdm.tqdm(results_iter, total=len(smiles_list), desc="Processing molecules")
+            ):
+                if res is None:
+                    # Encode None result for invalid SMILES
+                    encoded = pickle.dumps(None)
+                else:
+                    # Encode valid result
+                    to_store = {
+                        'smiles': res['smiles'],
+                        'target': res['target'],
+                        'precomputed': res['precomputed']
+                    }
+                    encoded = pickle.dumps(to_store)
                 
-                for i, res in enumerate(
-                    tqdm.tqdm(results_iter, total=len(smiles_list), desc="Processing molecules")
-                ):
-                    if res is None:
-                        # Encode None result for invalid SMILES
-                        encoded = pickle.dumps(None)
-                    else:
-                        # Encode valid result
-                        to_store = {
-                            'smiles': res['smiles'],
-                            'target': res['target'],
-                            'precomputed': res['precomputed']
-                        }
-                        encoded = pickle.dumps(to_store)
-                    
-                    # Add to buffer
-                    buffer.append(np.frombuffer(encoded, dtype=np.uint8))
-                    buffer_indices.append(i)
+                # Add to buffer
+                buffer.append(np.frombuffer(encoded, dtype=np.uint8))
+                buffer_indices.append(i)
 
-                    # Once we have chunk_size items, or end of iteration => bulk write
-                    if len(buffer) >= chunk_size or i == len(smiles_list) - 1:
-                        if buffer_indices:  # Make sure there's something to write
-                            dset[buffer_indices[0] : buffer_indices[-1] + 1] = buffer
-                            buffer = []
-                            buffer_indices = []
+                # Once we have chunk_size items, or end of iteration => bulk write
+                if len(buffer) >= chunk_size or i == len(smiles_list) - 1:
+                    if buffer_indices:
+                        dset[buffer_indices[0] : buffer_indices[-1] + 1] = buffer
+                        buffer = []
+                        buffer_indices = []
 
         except Exception as e:
             print(f"ERROR during parallel processing: {e}")
             raise
+        
         finally:
-            # CRITICAL FIX: Explicit cleanup
+            # FIXED: Proper pool cleanup
+            if pool is not None:
+                pool.close()      # No new tasks
+                pool.terminate()  # Kill workers immediately
+                pool.join()       # Wait for cleanup
+            
+            # FIXED: Explicit garbage collection
             import gc
             gc.collect()
 
@@ -527,7 +536,6 @@ def precompute_and_write_hdf5_parallel_chunked(
             print(f"✅ Data stored with PREPROCESSED targets (ready for training)")
         else:
             print(f"✅ Data stored with RAW targets (preprocessing applied during HDF5 creation)")
-
 
 # Worker Functions for Parallel Processing
 

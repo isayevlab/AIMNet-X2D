@@ -18,26 +18,17 @@ class ConfigurationError(Exception):
     """Raised when configuration is invalid."""
     pass
 
-
 def validate_args(args) -> bool:
     """
-    Validates command-line arguments and performs consistency checks with robust error handling.
+    Validates command-line arguments with HELPFUL error messages.
     
-    Args:
-        args: Parsed command-line arguments
-        
-    Returns:
-        bool: True if arguments are valid
-        
-    Raises:
-        ValidationError: If validation fails with detailed error messages
-        ConfigurationError: If configuration is invalid
+    FIXED: Clear, actionable error messages for common user mistakes.
     """
     try:
         errors = []
         warnings_list = []
         
-        # Validate different aspects of configuration
+        # Validate different aspects
         _validate_data_config(args, errors, warnings_list)
         _validate_task_config(args, errors, warnings_list)
         _validate_model_config(args, errors, warnings_list)
@@ -47,26 +38,54 @@ def validate_args(args) -> bool:
         
         # Print warnings
         for warning in warnings_list:
-            warnings.warn(f"Configuration Warning: {warning}", UserWarning)
+            warnings.warn(f"⚠️  {warning}", UserWarning)
         
-        # Raise errors if any
+        # Raise errors if any - with HELPFUL formatting
         if errors:
-            error_msg = "Configuration validation failed with the following errors:\n"
-            error_msg += "\n".join(f"  ❌ {error}" for error in errors)
-            error_msg += f"\n\nFound {len(errors)} error(s) and {len(warnings_list)} warning(s)."
+            error_msg = "\n" + "="*80 + "\n"
+            error_msg += "❌ CONFIGURATION ERRORS FOUND\n"
+            error_msg += "="*80 + "\n\n"
+            error_msg += f"Found {len(errors)} error(s) that must be fixed:\n\n"
+            
+            for i, error in enumerate(errors, 1):
+                error_msg += f"{i}. {error}\n\n"
+            
+            error_msg += "="*80 + "\n"
+            error_msg += "💡 QUICK FIXES:\n"
+            error_msg += "="*80 + "\n"
+            
+            # Add context-specific hints
+            if any("data_path" in e or "train_data" in e for e in errors):
+                error_msg += "• For data issues: Make sure your CSV files exist and have the right columns\n"
+                error_msg += "  Example: --data_path data.csv --smiles_column SMILES --target_column Activity\n\n"
+            
+            if any("multitask" in e.lower() for e in errors):
+                error_msg += "• For multitask: Specify target columns like this:\n"
+                error_msg += "  --task_type multitask --multi_target_columns prop1,prop2,prop3\n\n"
+            
+            if any("split" in e.lower() for e in errors):
+                error_msg += "• For split ratios: They must sum to 1.0\n"
+                error_msg += "  Example: --train_split 0.8 --val_split 0.1 --test_split 0.1\n\n"
+            
+            error_msg += f"\nFor more help, see documentation or run: python main.py --help\n"
+            error_msg += "="*80 + "\n"
+            
             raise ValidationError(error_msg)
         
         if warnings_list:
             print(f"✅ Configuration valid with {len(warnings_list)} warning(s)")
         else:
-            print("✅ Configuration validation passed")
+            print("✅ Configuration valid")
         
         return True
         
     except (ValidationError, ConfigurationError):
         raise
     except Exception as e:
-        raise ConfigurationError(f"Unexpected error during validation: {e}")
+        raise ConfigurationError(
+            f"Unexpected error during validation: {e}\n\n"
+            f"This is likely a bug. Please report it with the full error message."
+        )
 
 
 def _validate_data_config(args, errors: List[str], warnings: List[str]) -> None:

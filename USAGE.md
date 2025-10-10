@@ -220,7 +220,7 @@ This approach ensures the HDF5 files are created once and then reused for distri
 
 ## Inference Mode
 
-### Single-GPU Inference
+### Single-GPU Chunked Inference
 
 For prediction on new molecules:
 
@@ -231,7 +231,7 @@ python main.py \
   --model_save_path models/trained_model.pth
 ```
 
-### Multi-GPU Distributed Inference
+### Multi-GPU Distributed Chunked Inference
 
 For faster inference on large datasets using multiple GPUs:
 
@@ -246,6 +246,51 @@ torchrun --nproc_per_node=4 main.py \
 ```
 
 This will automatically split the inference workload across the GPUs and combine the results into a single output file.
+
+
+### HDF5 Inference
+For maximum performance, especially with very large datasets or on High-Performance Computing (HPC) systems, it is highly recommended to pre-process your inference data into a specialized HDF5 file.
+
+This pipeline provides a significant speedup by separating the slow, CPU-intensive work (SMILES parsing and graph featurization) from the fast, GPU-intensive work (model prediction).
+
+First, train your model. 
+```bash
+python main.py \
+  --data_path sample-data/qm9/qm9_whole.csv \
+  --target_column homo \
+  --epochs 50 \
+  --model_save_path models/homo_model.pth
+```
+
+Second, use the create_inference_hdf5.py script to convert your input CSV into an inference-ready HDF5 file. This script reads your trained model to ensure the molecular features are computed with the correct parameters (e.g., number of shells). In this case, we're just going to inference the whole qm9 dataset for demonstration purposes.
+```bash
+python create_inference_hdf5.py \
+  --model_path models/homo_model.pth \
+  --input_csv sample-data/qm9/qm9_whole.csv \
+  --output_hdf5 data/new_molecules_inference.h5 \
+  --smiles_column smiles \
+  --num_workers 20
+```
+
+Lastly, run inference. There are two ways to do this (Single GPU or Multi GPU)
+
+#### Single GPU
+```bash
+python main.py \
+  --inference_hdf5 data/new_molecules_inference.h5 \
+  --model_save_path models/homo_model.pth \
+  --inference_output results/predictions_hdf5_inference.csv
+```
+
+#### Multi GPU
+```bash
+torchrun --nproc_per_node=3 main.py \
+  --inference_hdf5 data/new_molecules_inference.h5 \
+  --num_gpu_devices 3 \
+  --model_save_path models/homo_model.pth \
+  --inference_output results/predictions_hdf5_inference_ddp.csv
+```
+
 
 ### Uncertainty Estimation
 

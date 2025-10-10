@@ -24,6 +24,8 @@ from torch_geometric.data import Data
 from models import GNN
 from utils.distributed import safe_get_rank, is_main_process
 
+import h5py
+
 
 
 class InferencePipeline:
@@ -58,6 +60,8 @@ class InferencePipeline:
         
         # Load model and preprocessing
         self._load_model_and_preprocessing()
+
+        self._verify_hdf5_model_compatibility()
         
         # Setup prediction methods
         if self.config.mc_samples > 0:
@@ -151,6 +155,132 @@ class InferencePipeline:
             print(f"Using model's num_shells value: {hyperparams.get('num_shells')}")
             self.config.max_hops = hyperparams.get('num_shells')
 
+    def _verify_hdf5_model_compatibility(self) -> None:
+        """
+        CRITICAL: Verify HDF5 file is compatible with loaded model.
+        """
+        if not hasattr(self.config, 'input_path'):
+            return
+        
+        if not self.config.input_path.endswith(('.h5', '.hdf5')):
+            return
+        
+        print("\n" + "="*60)
+        print("VERIFYING HDF5 COMPATIBILITY WITH MODEL")
+        print("="*60)
+        
+        try:
+            with h5py.File(self.config.input_path, 'r') as f:
+                if 'metadata' not in f:
+                    print("⚠️  WARNING: HDF5 file has no metadata")
+                    print("   Cannot verify compatibility - proceeding with caution")
+                    return
+                
+                metadata = f['metadata']
+                
+                # Get model parameters
+                model_max_hops = self.model.num_shells if hasattr(self.model, 'num_shells') else None
+                if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+                    model_max_hops = self.model.module.num_shells if hasattr(self.model.module, 'num_shells') else None
+                
+                model_task_type = self.model.task_type if hasattr(self.model, 'task_type') else None
+                if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+                    model_task_type = self.model.module.task_type if hasattr(self.model.module, 'task_type') else None
+                
+                # Check if this HDF5 has compatibility metadata
+                if 'model_compatibility' in metadata:
+                    compat = metadata['model_compatibility']
+                    errors = []
+                    
+                    # CRITICAL FIX: Check max_hops as HARD ERROR
+                    if 'max_hops' in compat.attrs and model_max_hops is not None:
+                        hdf5_max_hops = int(compat.attrs['max_hops'])
+                        if hdf5_max_hops != model_max_hops:
+                            errors.append(
+                                f"❌ CRITICAL: Max hops mismatch!\n"
+                                f"   HDF5 file: {hdf5_max_hops} hops\n"
+                                f"   Model expects: {model_max_hops} hops\n"
+                                f"   \n"
+                                f"   This is a FATAL incompatibility - the molecular features\n"
+                                f"   in the HDF5 file do not match what the model was trained on.\n"
+                                f"   \n"
+                                f"   The HDF5 file contains BFS features computed to depth {hdf5_max_hops},\n"
+                                f"   but the model expects features computed to depth {model_max_hops}.\n"
+                                f"   These are fundamentally different graph representations.\n"
+                                f"   \n"
+                                f"   You MUST recreate the HDF5 file with --num_shells={model_max_hops}"
+                            )
+                    
+                    # Check task type
+                    if 'task_type' in compat.attrs and model_task_type is not None:
+                        hdf5_task_type = str(compat.attrs['task_type'])
+                        if hdf5_task_type != model_task_type:
+                            errors.append(
+                                f"❌ Task type mismatch:\n"
+                                f"   HDF5: {hdf5_task_type}\n"
+                                f"   Model: {model_task_type}"
+                            )
+                    
+                    # Check preprocessing status (CRITICAL for inference)
+                    if 'preprocessing_applied' in compat.attrs:
+                        if compat.attrs['preprocessing_applied']:
+                            errors.append(
+                                "❌ HDF5 contains PREPROCESSED data\n"
+                                "   Inference requires RAW data\n"
+                                "   Use create_inference_hdf5.py to create proper HDF5"
+                            )
+                    
+                    # Check if marked for inference
+                    if 'for_inference' in compat.attrs:
+                        if not compat.attrs['for_inference']:
+                            print("⚠️  WARNING: HDF5 not marked for inference")
+                            print("   This file may have been created for training")
+                    
+                    if errors:
+                        error_msg = "\n" + "="*60 + "\n"
+                        error_msg += "HDF5 FILE IS INCOMPATIBLE WITH MODEL\n"
+                        error_msg += "="*60 + "\n\n"
+                        for i, e in enumerate(errors, 1):
+                            error_msg += f"{i}. {e}\n\n"
+                        error_msg += "="*60 + "\n"
+                        error_msg += "SOLUTION:\n"
+                        error_msg += "="*60 + "\n"
+                        error_msg += f"Recreate the HDF5 file with matching parameters:\n\n"
+                        error_msg += f"  python create_inference_hdf5.py \\\n"
+                        error_msg += f"    --model_path {self.config.model_path} \\\n"
+                        error_msg += f"    --input_csv YOUR_DATA.csv \\\n"
+                        error_msg += f"    --output_hdf5 {self.config.input_path} \\\n"
+                        error_msg += f"    --smiles_column smiles\n"
+                        error_msg += "="*60 + "\n"
+                        raise ValueError(error_msg)
+                    
+                    print("✅ HDF5 file is COMPATIBLE with model")
+                    print(f"   Max hops: {compat.attrs.get('max_hops', 'N/A')}")
+                    print(f"   Task type: {compat.attrs.get('task_type', 'N/A')}")
+                    print(f"   Preprocessing: {'Applied' if compat.attrs.get('preprocessing_applied', False) else 'RAW (will apply during inference)'}")
+                    print(f"   For inference: {compat.attrs.get('for_inference', 'N/A')}")
+                    
+                else:
+                    # Old format - basic checks only
+                    print("⚠️  HDF5 missing model_compatibility metadata")
+                    print("   Performing basic validation only...")
+                    
+                    preprocessing_applied = metadata.attrs.get('preprocessing_applied', False)
+                    if preprocessing_applied:
+                        raise ValueError(
+                            "HDF5 contains preprocessed data but inference requires raw data.\n"
+                            "Please recreate using create_inference_hdf5.py"
+                        )
+                    print("✓ Basic validation passed")
+        
+        except ValueError as e:
+            # Re-raise ValueError (our compatibility errors)
+            raise
+        except Exception as e:
+            print(f"⚠️  Could not verify HDF5 compatibility: {e}")
+            print("   Proceeding with caution...")
+        
+        print("="*60 + "\n")
 
     def _build_model_from_hyperparams(self, hyperparams: Dict[str, Any], state_dict: Dict[str, Any]) -> GNN:
         """Build model using EXACT hyperparameters from saved model."""
@@ -360,18 +490,23 @@ class InferencePipeline:
         # Always include SMILES
         header.append(self.config.smiles_column)
         
-        # Add ID column if input has one, otherwise add row_id
+        # Add ID column - check HDF5 metadata for ID info
         try:
-            input_df_sample = pd.read_csv(self.config.input_path, nrows=1)
-            if 'id' in input_df_sample.columns:
-                header.append('id')
-            elif 'ID' in input_df_sample.columns:
-                header.append('ID')
-            else:
-                header.append('row_id')  # Auto-generated row ID
+            import h5py
+            with h5py.File(self.config.input_path, 'r') as f:
+                if 'metadata' in f:
+                    metadata = f['metadata']
+                    # Check if HDF5 has ID information stored
+                    if 'has_id_column' in metadata.attrs and metadata.attrs['has_id_column']:
+                        id_col_name = metadata.attrs.get('id_column_name', 'id')
+                        header.append(id_col_name)
+                    else:
+                        header.append('row_id')  # Auto-generated
+                else:
+                    header.append('row_id')  # Fallback
         except:
-            header.append('row_id')  # Fallback
-        
+            header.append('row_id')  # Fallback on error
+                
         # Get target column names from saved model
         target_column_name = 'target'
         multi_target_names = None
@@ -423,6 +558,8 @@ class InferencePipeline:
         
         return header
 
+
+
     def _process_csv_chunks(self, start_line: int, end_line: Optional[int], output_file: str):
         """Process CSV file in chunks with position tracking."""
         # Setup chunk reading
@@ -436,12 +573,23 @@ class InferencePipeline:
             chunksize=self.config.chunk_size
         )
         
-        current_position = start_line - 1 if start_line > 1 else 0  # Track absolute position
+        current_position = start_line - 1 if start_line > 1 else 0
         
         for chunk_idx, chunk_df in enumerate(chunk_iterator):
-            self._current_chunk_start = current_position  # Store for ID generation
+            self._current_chunk_start = current_position
             self._process_single_chunk(chunk_df, chunk_idx, output_file)
             current_position += len(chunk_df)
+        
+        # FIXED: Explicitly sync file to disk BEFORE barrier
+        if self.is_ddp:
+            # Force OS to flush file buffers to disk
+            try:
+                fd = os.open(output_file, os.O_RDONLY)
+                os.fsync(fd)
+                os.close(fd)
+            except OSError as e:
+                print(f"[Pipeline] Rank {self.rank}: Warning - fsync failed: {e}")
+
 
     def _process_single_chunk(self, chunk_df: pd.DataFrame, chunk_idx: int, output_file: str):
         """Process a single chunk of data."""
@@ -668,7 +816,7 @@ class InferencePipeline:
         except Exception as e:
             print(f"[Pipeline] Error creating data object for {smiles[:30]}...: {str(e)}")
             return None
-
+    
     def _write_chunk_results(self, chunk_df: pd.DataFrame, valid_data: dict, 
                             predictions: np.ndarray, uncertainties: np.ndarray, output_file: str):
         """Write chunk results with ID preservation and proper column naming."""
@@ -682,134 +830,141 @@ class InferencePipeline:
         
         has_uncertainties = (self.config.mc_samples > 0) or (loss_function == 'evidential')
         
-        # Determine ID column
-        id_column = None
-        if 'id' in chunk_df.columns:
-            id_column = 'id'
-        elif 'ID' in chunk_df.columns:
-            id_column = 'ID'
-        
-        # Create mapping from original indices to predictions
-        valid_indices = set(valid_data['indices'])
-        pred_idx_map = {orig_idx: pred_idx for pred_idx, orig_idx in enumerate(valid_data['indices'])}
+        # CRITICAL FIX: For HDF5 inference, we don't have chunk_df
+        # We need to get SMILES and IDs from the HDF5 file directly
         
         with open(output_file, 'a') as f:
-            # Process ALL rows from chunk_df to maintain correspondence
-            for orig_idx in range(len(chunk_df)):
-                smiles = chunk_df.iloc[orig_idx][self.config.smiles_column]
-                line = [smiles]
+            # Process each valid molecule
+            for i, (smi, pred_idx) in enumerate(zip(valid_data['smiles'], range(len(predictions)))):
+                line = [smi]
                 
-                # Add ID or row number
-                if id_column:
-                    line.append(str(chunk_df.iloc[orig_idx][id_column]))
-                else:
-                    # Use chunk start + original index as row_id
-                    chunk_start = getattr(self, '_current_chunk_start', 0)
-                    line.append(str(chunk_start + orig_idx))
+                # Add ID - use original index from HDF5
+                original_idx = valid_data['indices'][i] + getattr(self, '_current_chunk_start', 0)
+                line.append(str(original_idx))
                 
-                if orig_idx in valid_indices:
-                    # Valid molecule - add predictions
-                    pred_idx = pred_idx_map[orig_idx]
-                    
-                    if len(predictions.shape) > 1 and predictions.shape[1] > 1:
-                        # Multi-task
-                        for j in range(predictions.shape[1]):
-                            line.append(str(predictions[pred_idx, j]))
-                            if has_uncertainties:
-                                line.append(str(uncertainties[pred_idx, j]))
-                    else:
-                        # Single task
-                        pred_val = predictions[pred_idx].item() if len(predictions.shape) > 1 else predictions[pred_idx]
-                        line.append(str(pred_val))
+                # Add predictions
+                if len(predictions.shape) > 1 and predictions.shape[1] > 1:
+                    # Multi-task
+                    for j in range(predictions.shape[1]):
+                        line.append(str(predictions[pred_idx, j]))
                         if has_uncertainties:
-                            unc_val = uncertainties[pred_idx].item() if len(uncertainties.shape) > 1 else uncertainties[pred_idx]
-                            line.append(str(unc_val))
+                            line.append(str(uncertainties[pred_idx, j]))
                 else:
-                    # Invalid molecule - add NaN values
-                    if len(predictions.shape) > 1 and predictions.shape[1] > 1:
-                        # Multi-task
-                        for j in range(predictions.shape[1]):
-                            line.append("NaN")
-                            if has_uncertainties:
-                                line.append("NaN")
-                    else:
-                        # Single task
-                        line.append("NaN")
-                        if has_uncertainties:
-                            line.append("NaN")
-
+                    # Single task
+                    pred_val = predictions[pred_idx].item() if len(predictions.shape) > 1 else predictions[pred_idx]
+                    line.append(str(pred_val))
+                    if has_uncertainties:
+                        unc_val = uncertainties[pred_idx].item() if len(uncertainties.shape) > 1 else uncertainties[pred_idx]
+                        line.append(str(unc_val))
+                
                 f.write(','.join(line) + '\n')
             
-            f.flush()  # Ensure data is written immediately
+            f.flush()
 
     def _combine_ddp_results(self, rank_output_file: str):
-        """Combine results from all DDP ranks."""
+        """
+        Combine results from all DDP ranks with SMILES preservation.
+        
+        FIXED: Proper file synchronization without sleep-based race conditions.
+        """
         if not self.is_ddp:
             return
         
-        # Non-main ranks just exit cleanly
+        # FIXED: Barrier after all ranks have written and synced files
+        if dist.is_available() and dist.is_initialized():
+            print(f"[Pipeline] Rank {self.rank}: Finished writing, synchronizing...")
+            dist.barrier()
+        
+        # Only rank 0 combines files
         if self.rank != 0:
-            print(f"[Pipeline] Rank {self.rank}: Finished processing, exiting...")
-            return
+            print(f"[Pipeline] Rank {self.rank}: Exiting after barrier...")
+            return  # Early return for non-zero ranks
         
-        # Only rank 0 does file combination
-        print(f"[Pipeline] Rank 0: Waiting briefly for other ranks to finish writing...")
-        import time
-        time.sleep(3)  # Give other ranks time to finish writing
+        print(f"[Pipeline] Rank 0: Beginning file combination...")
         
-        print(f"[Pipeline] Combining results from {self.world_size} ranks...")
-        
-        # Find existing rank files
+        # Verify all rank files exist
         existing_files = []
         for rank in range(self.world_size):
             base, ext = os.path.splitext(self.config.output_path)
             rank_file = f"{base}_rank{rank}{ext}"
-            if os.path.exists(rank_file):
-                existing_files.append(rank_file)
-                print(f"[Pipeline] Found: {rank_file}")
-        
-        if not existing_files:
-            print("[Pipeline] No rank files found!")
-            return
-        
-        # Simple file combination
-        total_lines = 0
-        try:
-            with open(self.config.output_path, 'w') as outfile:
-                # Get header from first file
-                with open(existing_files[0], 'r') as f:
-                    header = f.readline()
-                    outfile.write(header)
-                
-                # Combine all rank files
-                for i, rank_file in enumerate(existing_files):
-                    with open(rank_file, 'r') as f:
-                        f.readline()  # Skip header
-                        lines_written = 0
-                        for line in f:
-                            line = line.strip()
-                            if line:
-                                outfile.write(line + '\n')
-                                lines_written += 1
-                                total_lines += 1
-                        print(f"[Pipeline] Added {lines_written:,} lines from rank file {i}")
             
-            print(f"[Pipeline] SUCCESS: Combined {total_lines:,} total predictions")
-            print(f"[Pipeline] Output: {self.config.output_path}")
+            if os.path.exists(rank_file):
+                file_size = os.path.getsize(rank_file)
+                print(f"[Pipeline]   ✓ Rank {rank}: {rank_file} ({file_size:,} bytes)")
+                existing_files.append(rank_file)
+            else:
+                print(f"[Pipeline]   ✗ Rank {rank}: MISSING {rank_file}")
+        
+        if len(existing_files) != self.world_size:
+            raise RuntimeError(
+                f"Missing rank files after barrier! Expected {self.world_size}, found {len(existing_files)}\n"
+                f"This indicates a file system synchronization issue or rank failure."
+            )
+        
+        # Combine files preserving SMILES and IDs
+        import pandas as pd
+        
+        try:
+            # Read all rank files
+            dfs = []
+            for rank_file in existing_files:
+                df_rank = pd.read_csv(rank_file)
+                dfs.append(df_rank)
+                print(f"[Pipeline]   ✓ Read {len(df_rank)} rows from {os.path.basename(rank_file)}")
+            
+            # Concatenate
+            combined_df = pd.concat(dfs, ignore_index=True)
+            
+            # Sort by row_id if present to restore original order
+            if 'row_id' in combined_df.columns:
+                combined_df = combined_df.sort_values('row_id').reset_index(drop=True)
+            
+            # Save combined file
+            combined_df.to_csv(self.config.output_path, index=False)
+            
+            output_size = os.path.getsize(self.config.output_path)
+            
+            print(f"\n{'='*60}")
+            print(f"✅ SUCCESS: Combined predictions from {self.world_size} GPUs")
+            print(f"{'='*60}")
+            print(f"  Total rows: {len(combined_df):,}")
+            print(f"  Output file: {self.config.output_path}")
+            print(f"  File size: {output_size:,} bytes ({output_size/1024/1024:.2f} MB)")
+            print(f"  Columns: {', '.join(combined_df.columns)}")
+            print(f"{'='*60}\n")
             
             # Clean up rank files
             for rank_file in existing_files:
                 try:
                     os.remove(rank_file)
-                    print(f"[Pipeline] Cleaned up: {rank_file}")
-                except:
-                    pass
+                    print(f"[Pipeline]   ✓ Removed: {rank_file}")
+                except Exception as e:
+                    print(f"[Pipeline]   ⚠️  Could not remove {rank_file}: {e}")
                     
         except Exception as e:
-            print(f"[Pipeline] ERROR combining files: {e}")
+            print(f"\n{'='*60}")
+            print(f"❌ ERROR COMBINING FILES")
+            print(f"{'='*60}")
+            print(f"{e}")
+            print(f"\nRank files preserved for debugging:")
+            for f in existing_files:
+                print(f"  - {f}")
+            print(f"{'='*60}\n")
+            raise
+        
+        # REMOVED: This second barrier causes deadlock!
+        # Ranks 1 & 2 already exited this function, so they won't be here
+        # if dist.is_available() and dist.is_initialized():
+        #     print(f"[Pipeline] Rank 0: Signaling completion to other ranks...")
+        #     dist.barrier()
+        #     print(f"[Pipeline] Rank 0: All ranks notified, cleanup complete")
+        
+        print(f"[Pipeline] Rank 0: File combination complete, continuing...")
 
     def cleanup_and_exit(self):
-        """Properly clean up DDP resources without hanging."""
+        """
+        Properly clean up DDP resources without hanging.
+        """
         try:
             rank = self.rank
             print(f"[Pipeline] Rank {rank}: Starting cleanup...")
@@ -823,20 +978,20 @@ class InferencePipeline:
             
             # 3. Synchronize all ranks before GPU cleanup
             if dist.is_available() and dist.is_initialized():
-                print(f"[Pipeline] Rank {rank}: Synchronizing before cleanup...")
-                dist.barrier()
+                print(f"[Pipeline] Rank {rank}: Synchronizing before GPU cleanup...")
+                try:
+                    dist.barrier()  # FIXED: Removed timeout
+                except Exception as e:
+                    print(f"[Pipeline] Rank {rank}: Barrier error: {e}")
             
             # 4. GPU cleanup
             if torch.cuda.is_available():
-                # Move model to CPU first to free GPU memory
                 if hasattr(self, 'model') and self.model is not None:
                     self.model.cpu()
                 
-                # Clear cache and synchronize
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
                 
-                # Reset CUDA context if possible
                 if hasattr(torch.cuda, 'reset_peak_memory_stats'):
                     torch.cuda.reset_peak_memory_stats()
             
@@ -847,9 +1002,11 @@ class InferencePipeline:
             # 6. Final barrier before process group cleanup
             if dist.is_available() and dist.is_initialized():
                 print(f"[Pipeline] Rank {rank}: Final synchronization...")
-                dist.barrier()
+                try:
+                    dist.barrier()  # FIXED: Removed timeout
+                except Exception as e:
+                    print(f"[Pipeline] Rank {rank}: Final barrier error: {e}")
                 
-                # Let rank 0 signal completion
                 if rank == 0:
                     print("[Pipeline] All ranks synchronized, cleanup complete")
             
@@ -857,17 +1014,15 @@ class InferencePipeline:
             
         except Exception as e:
             print(f"[Pipeline] Rank {rank}: Cleanup error: {e}")
-            # Don't re-raise - we're already in cleanup mode
         
         finally:
-            # Ensure process exits cleanly
             if dist.is_available() and dist.is_initialized():
                 try:
-                    # Small delay to ensure all ranks reach this point
                     import time
                     time.sleep(0.1)
                 except:
                     pass
+
 
     def _close_file_handles(self):
         """Close any open file handles."""

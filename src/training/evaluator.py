@@ -13,8 +13,7 @@ import torch.distributed as dist
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from utils.distributed import safe_get_rank, gather_ndarray_to_rank0
-
+from utils.distributed import safe_get_rank, gather_ndarray_to_rank0, gather_strings_to_rank0
 
 @torch.no_grad()
 def evaluate(
@@ -31,27 +30,27 @@ def evaluate(
     """
     Evaluate model on a given data loader.
     
-    Args:
-        model: Model to evaluate
-        data_loader: DataLoader with evaluation data
-        criterion: Loss function
-        device: Device to evaluate on
-        task_type: Type of task ('regression' or 'multitask')
-        mixed_precision: Whether to use mixed precision
-        num_tasks: Number of tasks
-        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
-        is_ddp: Whether distributed data parallel is enabled
+    FIXED: Tracks skipped batches to prevent SMILES/prediction misalignment.
     """
     model.eval()
     total_size = 0
 
     all_preds_list = []
     all_targets_list = []
+    all_smiles_list = []
     total_loss = 0.0
+    
+    # FIXED: Track skipped batches
+    skipped_batches = []
 
     for batch_idx, batch in enumerate(data_loader):
         if batch is None:
+            skipped_batches.append(batch_idx)
+            print(f"WARNING: Batch {batch_idx} was None, skipping")
             continue
+        
+        # Collect SMILES from each batch
+        all_smiles_list.extend(batch.smiles_list)
             
         # Prepare batch data
         batch_multi_hop_edges = batch.multi_hop_edge_indices.to(device)
@@ -59,6 +58,8 @@ def evaluate(
         batch_atom_features = {k: v.to(device) for k, v in batch.atom_features_map.items()}
 
         if isinstance(batch.targets, list):
+            print(f"WARNING: Batch {batch_idx} has list targets, skipping")
+            skipped_batches.append(batch_idx)
             continue
         else:
             targets = batch.targets.to(device)
@@ -95,7 +96,7 @@ def evaluate(
                 trans_indices
             )
             if torch.isnan(outputs).any():
-                print("NaN found in outputs!")
+                print(f"WARNING: NaN found in outputs for batch {batch_idx}!")
             loss = criterion(outputs, targets)
 
         total_loss += loss.item() * batch_size
@@ -106,21 +107,32 @@ def evaluate(
         # Collect local predictions/targets
         all_preds_list.append(processed_outputs.cpu().numpy())
         all_targets_list.append(targets.cpu().numpy())
+    
+    # FIXED: Report skipped batches
+    if skipped_batches:
+        print(f"WARNING: Skipped {len(skipped_batches)} batches during evaluation: {skipped_batches[:10]}{'...' if len(skipped_batches) > 10 else ''}")
 
     # Compute local average loss
     avg_loss = total_loss / (total_size if total_size > 0 else 1)
 
     # Calculate metrics based on task type
     if task_type == 'multitask':
-        metrics = _compute_multitask_metrics(all_preds_list, all_targets_list, avg_loss, preprocessing_pipeline)
+        metrics = _compute_multitask_metrics(
+            all_preds_list, all_targets_list, all_smiles_list, 
+            avg_loss, preprocessing_pipeline
+        )
     else:
-        metrics = _compute_single_task_metrics(all_preds_list, all_targets_list, avg_loss, preprocessing_pipeline)
+        metrics = _compute_single_task_metrics(
+            all_preds_list, all_targets_list, all_smiles_list,
+            avg_loss, preprocessing_pipeline
+        )
 
     # Combine metrics across ranks for DDP
     if is_ddp and dist.is_available() and dist.is_initialized():
         metrics = _combine_ddp_metrics(
             metrics, total_loss, total_size, all_preds_list, all_targets_list,
-            device, task_type, num_tasks, preprocessing_pipeline  # CHANGED: was std_scaler
+            all_smiles_list,
+            device, task_type, num_tasks, preprocessing_pipeline
         )
 
     return metrics
@@ -149,8 +161,12 @@ def _process_evidential_outputs_for_metrics(outputs: torch.Tensor, model) -> tor
     return outputs
 
 def _combine_ddp_metrics(metrics, total_loss, total_size, all_preds_list, all_targets_list,
-                        device, task_type, num_tasks, preprocessing_pipeline):
-    """Combine evaluation metrics across DDP ranks."""
+                        all_smiles_list, device, task_type, num_tasks, preprocessing_pipeline):
+    """
+    Combine evaluation metrics across DDP ranks.
+    
+    FIXED: Now handles SMILES for proper SAE inverse transform.
+    """
     # All-reduce the total_loss and total_size
     local_tensor = torch.tensor([total_loss, total_size], dtype=torch.float, device=device)
     dist.all_reduce(local_tensor, op=dist.ReduceOp.SUM)
@@ -162,16 +178,18 @@ def _combine_ddp_metrics(metrics, total_loss, total_size, all_preds_list, all_ta
     else:
         global_avg_loss = 0.0
 
-    # Gather predictions/targets on rank 0, then compute final metrics
+    # Gather predictions/targets/smiles on rank 0, then compute final metrics
     rank = safe_get_rank()
     
     if task_type == 'multitask':
         final_metrics = _combine_multitask_ddp_metrics(
-            all_preds_list, all_targets_list, global_avg_loss, num_tasks, preprocessing_pipeline, rank, device
+            all_preds_list, all_targets_list, all_smiles_list,
+            global_avg_loss, num_tasks, preprocessing_pipeline, rank, device
         )
     else:
         final_metrics = _combine_single_task_ddp_metrics(
-            all_preds_list, all_targets_list, global_avg_loss, preprocessing_pipeline, rank, device
+            all_preds_list, all_targets_list, all_smiles_list,
+            global_avg_loss, preprocessing_pipeline, rank, device
         )
 
     # Broadcast final_metrics to all ranks
@@ -179,19 +197,36 @@ def _combine_ddp_metrics(metrics, total_loss, total_size, all_preds_list, all_ta
     
     return final_metrics
 
-def _compute_multitask_metrics(all_preds_list, all_targets_list, avg_loss, preprocessing_pipeline):
-    """Compute metrics for multitask evaluation."""
+def _compute_multitask_metrics(all_preds_list, all_targets_list, all_smiles_list, 
+                               avg_loss, preprocessing_pipeline):
+    """
+    Compute metrics for multitask evaluation.
+    
+    FIXED: Now accepts and uses SMILES for proper inverse transform.
+    """
     if len(all_preds_list) == 0:
         return {'loss': avg_loss}
     
     Y_pred = np.concatenate(all_preds_list, axis=0)
     Y_true = np.concatenate(all_targets_list, axis=0)
 
-    # Apply inverse preprocessing if pipeline is provided
-    # Note: We don't have SMILES here, so we can only do standard scaling inverse
-    if preprocessing_pipeline is not None and preprocessing_pipeline.standard_scaler is not None:
-        Y_pred = preprocessing_pipeline.standard_scaler.inverse_transform(Y_pred)
-        Y_true = preprocessing_pipeline.standard_scaler.inverse_transform(Y_true)
+    # FIXED: Apply COMPLETE inverse preprocessing including SAE
+    if preprocessing_pipeline is not None:
+        # Ensure proper shape
+        if len(Y_pred.shape) == 1:
+            Y_pred = Y_pred.reshape(-1, 1)
+        if len(Y_true.shape) == 1:
+            Y_true = Y_true.reshape(-1, 1)
+        
+        # Apply inverse transform with SMILES for SAE
+        Y_pred = preprocessing_pipeline.inverse_transform(
+            smiles_list=all_smiles_list,
+            transformed_targets=Y_pred
+        )
+        Y_true = preprocessing_pipeline.inverse_transform(
+            smiles_list=all_smiles_list,
+            transformed_targets=Y_true
+        )
 
     mae_vals = []
     rmse_vals = []
@@ -221,19 +256,62 @@ def _compute_multitask_metrics(all_preds_list, all_targets_list, avg_loss, prepr
     }
 
 
-def _compute_single_task_metrics(all_preds_list, all_targets_list, avg_loss, preprocessing_pipeline):
-    """Compute metrics for single-task evaluation."""
+def _compute_single_task_metrics(all_preds_list, all_targets_list, all_smiles_list,
+                                 avg_loss, preprocessing_pipeline):
+    """
+    Compute metrics for single-task evaluation.
+    
+    FIXED: Validates that SMILES count matches predictions before inverse transform.
+    """
     if len(all_preds_list) == 0:
         return {'loss': avg_loss}
     
     preds_np = np.concatenate(all_preds_list, axis=0)
     targets_np = np.concatenate(all_targets_list, axis=0)
     
-    # Apply inverse preprocessing if pipeline is provided
-    # Note: We don't have SMILES here, so we can only do standard scaling inverse
-    if preprocessing_pipeline is not None and preprocessing_pipeline.standard_scaler is not None:
-        preds_np = preprocessing_pipeline.standard_scaler.inverse_transform(preds_np)
-        targets_np = preprocessing_pipeline.standard_scaler.inverse_transform(targets_np)
+    # CRITICAL: Validate counts match
+    if len(all_smiles_list) != len(preds_np):
+        raise ValueError(
+            f"CRITICAL DATA CORRUPTION DETECTED!\n\n"
+            f"SMILES count: {len(all_smiles_list)}\n"
+            f"Predictions count: {len(preds_np)}\n"
+            f"These MUST match or predictions will be assigned to wrong molecules!\n\n"
+            f"This usually means:\n"
+            f"1. Some batches were skipped due to errors\n"
+            f"2. Data loader is dropping invalid molecules inconsistently\n"
+            f"3. HDF5 file is corrupted\n\n"
+            f"SOLUTION: Check logs for 'WARNING: Invalid SMILES' messages.\n"
+            f"Recreate your HDF5 files or check your CSV for corrupted rows."
+        )
+    
+    # Apply COMPLETE inverse preprocessing including SAE
+    if preprocessing_pipeline is not None:
+        # Ensure proper shape
+        if len(preds_np.shape) == 1:
+            preds_np = preds_np.reshape(-1, 1)
+        if len(targets_np.shape) == 1:
+            targets_np = targets_np.reshape(-1, 1)
+        
+        try:
+            # Apply inverse transform with SMILES for SAE
+            preds_np = preprocessing_pipeline.inverse_transform(
+                smiles_list=all_smiles_list,
+                transformed_targets=preds_np
+            )
+            targets_np = preprocessing_pipeline.inverse_transform(
+                smiles_list=all_smiles_list,
+                transformed_targets=targets_np
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Preprocessing inverse transform failed!\n"
+                f"Error: {e}\n\n"
+                f"This usually means:\n"
+                f"1. Model preprocessing doesn't match data preprocessing\n"
+                f"2. SAE statistics are missing or corrupted\n"
+                f"3. SMILES in data don't match training SMILES\n\n"
+                f"SOLUTION: Ensure you're using the same model and data format."
+            )
         
     rmse_value = math.sqrt(mean_squared_error(targets_np, preds_np))
     
@@ -244,10 +322,14 @@ def _compute_single_task_metrics(all_preds_list, all_targets_list, avg_loss, pre
         'r2': r2_score(targets_np, preds_np)
     }
 
-
-def _combine_multitask_ddp_metrics(all_preds_list, all_targets_list, global_avg_loss, 
-                                  num_tasks, preprocessing_pipeline, rank, device):
-    """Combine multitask metrics across DDP ranks."""
+def _combine_multitask_ddp_metrics(all_preds_list, all_targets_list, all_smiles_list,
+                                   global_avg_loss, num_tasks, preprocessing_pipeline, 
+                                   rank, device):
+    """
+    Combine multitask metrics across DDP ranks.
+    
+    FIXED: Now handles SMILES gathering for SAE inverse transform.
+    """
     # Flatten local preds
     if len(all_preds_list) == 0:
         local_preds_np = np.zeros((0, num_tasks), dtype=np.float32)
@@ -258,12 +340,21 @@ def _combine_multitask_ddp_metrics(all_preds_list, all_targets_list, global_avg_
 
     global_preds = gather_ndarray_to_rank0(local_preds_np, device)
     global_targs = gather_ndarray_to_rank0(local_targs_np, device)
+    
+    # FIXED: Gather SMILES to rank 0
+    global_smiles = gather_strings_to_rank0(all_smiles_list, device)
 
     if rank == 0 and global_preds.shape[0] > 0:
-        # Apply inverse preprocessing if pipeline is provided
-        if preprocessing_pipeline is not None and preprocessing_pipeline.standard_scaler is not None:
-            global_preds = preprocessing_pipeline.standard_scaler.inverse_transform(global_preds)
-            global_targs = preprocessing_pipeline.standard_scaler.inverse_transform(global_targs)
+        # FIXED: Apply COMPLETE inverse preprocessing including SAE
+        if preprocessing_pipeline is not None:
+            global_preds = preprocessing_pipeline.inverse_transform(
+                smiles_list=global_smiles,
+                transformed_targets=global_preds
+            )
+            global_targs = preprocessing_pipeline.inverse_transform(
+                smiles_list=global_smiles,
+                transformed_targets=global_targs
+            )
 
         M = global_targs.shape[1]
         mae_vals = []
@@ -294,10 +385,13 @@ def _combine_multitask_ddp_metrics(all_preds_list, all_targets_list, global_avg_
 
     return final_metrics
 
-
-def _combine_single_task_ddp_metrics(all_preds_list, all_targets_list, global_avg_loss, 
-                                   preprocessing_pipeline, rank, device):
-    """Combine single-task metrics across DDP ranks."""
+def _combine_single_task_ddp_metrics(all_preds_list, all_targets_list, all_smiles_list,
+                                     global_avg_loss, preprocessing_pipeline, rank, device):
+    """
+    Combine single-task metrics across DDP ranks.
+    
+    FIXED: Now handles SMILES gathering for SAE inverse transform.
+    """
     # single-task regression
     if len(all_preds_list) == 0:
         local_preds_np = np.zeros((0,1), dtype=np.float32)
@@ -308,12 +402,21 @@ def _combine_single_task_ddp_metrics(all_preds_list, all_targets_list, global_av
 
     global_preds = gather_ndarray_to_rank0(local_preds_np, device)
     global_targs = gather_ndarray_to_rank0(local_targs_np, device)
+    
+    # FIXED: Gather SMILES to rank 0
+    global_smiles = gather_strings_to_rank0(all_smiles_list, device)
 
     if rank == 0 and global_preds.shape[0] > 0:
-        # Apply inverse preprocessing if pipeline is provided
-        if preprocessing_pipeline is not None and preprocessing_pipeline.standard_scaler is not None:
-            global_preds = preprocessing_pipeline.standard_scaler.inverse_transform(global_preds)
-            global_targs = preprocessing_pipeline.standard_scaler.inverse_transform(global_targs)
+        # FIXED: Apply COMPLETE inverse preprocessing including SAE
+        if preprocessing_pipeline is not None:
+            global_preds = preprocessing_pipeline.inverse_transform(
+                smiles_list=global_smiles,
+                transformed_targets=global_preds
+            )
+            global_targs = preprocessing_pipeline.inverse_transform(
+                smiles_list=global_smiles,
+                transformed_targets=global_targs
+            )
 
         mae_val = mean_absolute_error(global_targs, global_preds)
         rmse_val = math.sqrt(mean_squared_error(global_targs, global_preds))

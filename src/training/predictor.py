@@ -20,26 +20,37 @@ def predict_gnn(
     data_loader,
     device,
     task_type='regression',
-    preprocessing_pipeline=None,  # CHANGED: was std_scaler
-    is_ddp=False
+    preprocessing_pipeline=None,
+    is_ddp=False,
+    show_progress=True,  # NEW parameter
+    progress_total=None  # NEW parameter
 ):
     """
-    Returns predictions in CPU numpy form.
-
+    Returns predictions in CPU numpy form with optional progress bar.
+    
     Args:
-        model: Model to use for prediction
-        data_loader: DataLoader with input data
-        device: Device to run inference on
-        task_type: Type of task ('regression' or 'multitask')
-        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
-        is_ddp: Whether DDP is enabled
-        
-    Returns:
-        Array of predictions for this rank's portion of the dataset
+        show_progress: Whether to show progress bar
+        progress_total: Total number of items (for progress bar)
     """
     model.eval()
     all_preds = []
     all_smiles = []
+    
+    # Setup progress bar
+    is_main = not is_ddp or safe_get_rank() == 0
+    
+    if show_progress and is_main:
+        # Try to get total from data_loader or use provided total
+        try:
+            total = len(data_loader) if hasattr(data_loader, '__len__') else progress_total
+            if total:
+                pbar = tqdm.tqdm(total=total, desc="Inference", unit="batch")
+            else:
+                pbar = tqdm.tqdm(desc="Inference", unit="batch")
+        except:
+            pbar = tqdm.tqdm(desc="Inference", unit="batch")
+    else:
+        pbar = None
 
     for batch_idx, batch in enumerate(data_loader):
         if batch is None:
@@ -70,6 +81,16 @@ def predict_gnn(
         
         all_preds.append(predictions.detach().cpu().numpy())
         all_smiles.extend(batch.smiles_list)
+        
+        # Update progress bar
+        if pbar is not None:
+            pbar.update(1)
+            # Show molecule count in postfix
+            pbar.set_postfix({'molecules': len(all_smiles)})
+
+    # Close progress bar
+    if pbar is not None:
+        pbar.close()
 
     if len(all_preds) == 0:
         local_preds = np.array([])
@@ -83,6 +104,8 @@ def predict_gnn(
             
         # Apply complete inverse preprocessing
         if preprocessing_pipeline is not None and task_type in ['regression', 'multitask']:
+            if is_main:
+                print("Applying inverse preprocessing...")
             local_preds = preprocessing_pipeline.inverse_transform(
                 smiles_list=local_smiles,
                 transformed_targets=local_preds
@@ -93,88 +116,6 @@ def predict_gnn(
         return _combine_ddp_predictions(local_preds, device)
     else:
         return local_preds
-
-
-@torch.no_grad()
-def predict_gnn(
-    model,
-    data_loader,
-    device,
-    task_type='regression',
-    preprocessing_pipeline=None,  # CHANGED: was std_scaler
-    is_ddp=False
-):
-    """
-    Returns predictions in CPU numpy form.
-
-    Args:
-        model: Model to use for prediction
-        data_loader: DataLoader with input data
-        device: Device to run inference on
-        task_type: Type of task ('regression' or 'multitask')
-        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
-        is_ddp: Whether DDP is enabled
-        
-    Returns:
-        Array of predictions for this rank's portion of the dataset
-    """
-    model.eval()
-    all_preds = []
-    all_smiles = []
-
-    for batch_idx, batch in enumerate(data_loader):
-        if batch is None:
-            continue
-            
-        # Prepare batch data
-        batch_multi_hop_edges = batch.multi_hop_edge_indices.to(device)
-        batch_indices = batch.batch_indices.to(device)
-        batch_atom_features = {k: v.to(device) for k, v in batch.atom_features_map.items()}
-        total_charges = batch.total_charges.to(device)
-        tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
-        cis_indices = batch.final_cis_tensor.to(device)
-        trans_indices = batch.final_trans_tensor.to(device)
-
-        # Forward pass
-        outputs, _, _ = model(
-            batch_atom_features,
-            batch_multi_hop_edges,
-            batch_indices,
-            total_charges,
-            tetrahedral_indices,
-            cis_indices,
-            trans_indices
-        )
-
-        # Process evidential outputs to get predictions
-        predictions = _process_evidential_outputs(outputs, model)
-        
-        all_preds.append(predictions.detach().cpu().numpy())
-        all_smiles.extend(batch.smiles_list)
-
-    if len(all_preds) == 0:
-        local_preds = np.array([])
-    else:
-        local_preds = np.concatenate(all_preds, axis=0)
-        local_smiles = all_smiles
-        
-        # Ensure proper shape for inverse transform
-        if task_type in ['regression', 'multitask'] and len(local_preds.shape) == 1:
-            local_preds = local_preds.reshape(-1, 1)
-            
-        # Apply complete inverse preprocessing
-        if preprocessing_pipeline is not None and task_type in ['regression', 'multitask']:
-            local_preds = preprocessing_pipeline.inverse_transform(
-                smiles_list=local_smiles,
-                transformed_targets=local_preds
-            )
-
-    # If DDP is enabled, combine predictions across all ranks
-    if is_ddp and dist.is_initialized():
-        return _combine_ddp_predictions(local_preds, device)
-    else:
-        return local_preds
-
 
 @torch.no_grad()
 def predict_with_mc_dropout(
@@ -183,23 +124,13 @@ def predict_with_mc_dropout(
     device,
     num_samples=30,
     task_type='regression',
-    preprocessing_pipeline=None,  # CHANGED: was std_scaler
+    preprocessing_pipeline=None,
     is_ddp=False
 ):
     """
     Get predictions with uncertainty estimates using Monte Carlo Dropout.
     
-    Args:
-        model: Model to use for prediction
-        data_loader: DataLoader with input data
-        device: Device to run inference on
-        num_samples: Number of MC dropout samples
-        task_type: Type of task ('regression' or 'multitask')
-        preprocessing_pipeline: Preprocessing pipeline for inverse transforms
-        is_ddp: Whether DDP is enabled
-        
-    Returns:
-        Tuple of (mean_predictions, uncertainties)
+    FIXED: Improved progress bar UI - shows total operations instead of nested bars.
     """
     # Set model to eval mode
     model.eval()
@@ -222,20 +153,25 @@ def predict_with_mc_dropout(
     # Progress tracking
     is_main = not is_ddp or safe_get_rank() == 0
     
-    # Add tqdm for Monte Carlo samples
-    for sample_idx in tqdm.tqdm(range(num_samples), desc="MC Dropout Samples", disable=not is_main):
+    # FIXED: Calculate total operations for clearer progress tracking
+    try:
+        num_batches = len(data_loader)
+    except:
+        num_batches = None
+    
+    if num_batches is not None and is_main:
+        total_ops = num_samples * num_batches
+        print(f"[MC Dropout] Running {num_samples} samples × {num_batches} batches = {total_ops} total operations")
+        pbar = tqdm.tqdm(total=total_ops, desc="MC Dropout Inference")
+    else:
+        pbar = None
+    
+    # Run MC dropout samples
+    for sample_idx in range(num_samples):
         sample_preds = []
         sample_smiles = []
         
-        # Use a nested tqdm for batches
-        batch_iterator = tqdm.tqdm(
-            data_loader, 
-            desc=f"Sample {sample_idx + 1}/{num_samples}", 
-            leave=False,
-            disable=not is_main
-        )
-        
-        for batch in batch_iterator:
+        for batch in data_loader:
             if batch is None:
                 continue
                 
@@ -267,6 +203,10 @@ def predict_with_mc_dropout(
             outputs = _process_evidential_outputs(outputs, model)
             
             sample_preds.append(outputs.detach().cpu().numpy())
+            
+            # FIXED: Update progress bar per batch
+            if pbar is not None:
+                pbar.update(1)
         
         # Store SMILES from first sample
         if not smiles_collected:
@@ -290,6 +230,10 @@ def predict_with_mc_dropout(
                 
             all_predictions.append(sample_pred_array)
     
+    # Close progress bar
+    if pbar is not None:
+        pbar.close()
+    
     # If we have predictions, calculate statistics
     if len(all_predictions) > 0:
         # Stack to shape [num_samples, num_molecules, num_tasks]
@@ -304,10 +248,12 @@ def predict_with_mc_dropout(
             mean_predictions = _combine_ddp_predictions(mean_predictions, device)
             uncertainties = _combine_ddp_predictions(uncertainties, device)
         
+        if is_main:
+            print(f"[MC Dropout] Completed: {num_samples} samples processed")
+        
         return mean_predictions, uncertainties
     else:
         return np.array([]), np.array([])
-
 
 @torch.no_grad()
 def predict_gnn_with_smiles(model, data_loader, device, task_type, preprocessing_pipeline=None, is_ddp=False):

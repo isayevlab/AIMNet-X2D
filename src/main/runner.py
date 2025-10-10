@@ -94,7 +94,25 @@ def main_runner(args) -> Dict[str, Any]:
     
     # Handle inference mode
     if handle_inference_mode(args):
-        return _run_inference_mode(args, device, is_ddp, local_rank, world_size)
+        results = _run_inference_mode(args, device, is_ddp, local_rank, world_size)
+        
+        if is_ddp and dist.is_initialized():
+            print(f"[Runner] Rank {local_rank}: Cleaning up distributed resources...")
+            try:
+                # Final barrier to ensure all ranks finish
+                dist.barrier()  # FIXED: Removed timeout
+                print(f"[Runner] Rank {local_rank}: Final barrier passed")
+            except Exception as e:
+                print(f"[Runner] Rank {local_rank}: Barrier error (may be expected): {e}")
+            
+            # Destroy process group
+            try:
+                dist.destroy_process_group()
+                print(f"[Runner] Rank {local_rank}: Process group destroyed")
+            except Exception as e:
+                print(f"[Runner] Rank {local_rank}: Error destroying process group: {e}")
+        
+        return results
     
     # Setup experiment logging
     wandb_run = setup_experiment_logging(args)
@@ -122,24 +140,55 @@ def main_runner(args) -> Dict[str, Any]:
         # Cleanup
         cleanup_temporary_files(args)
         
-        # Cleanup distributed
+        # CRITICAL FIX: Always cleanup distributed properly
         if is_ddp and dist.is_initialized():
-            dist.destroy_process_group()
-
+            print(f"[Runner] Rank {local_rank}: Final cleanup...")
+            try:
+                dist.barrier(timeout=10)
+            except:
+                pass  # Timeout is OK here
+            
+            try:
+                dist.destroy_process_group()
+                print(f"[Runner] Rank {local_rank}: Cleanup complete")
+            except:
+                pass  # Already destroyed is OK
 
 def _run_inference_mode(args, device, is_ddp, local_rank, world_size) -> Dict[str, Any]:
-    """Run inference mode execution."""
+    """Run inference mode execution with progress tracking."""
     if is_main_process():
         print("="*80)
         print("RUNNING INFERENCE MODE")
         print("="*80)
     
-    # Run inference
-    inference_main(args, device, is_ddp, local_rank, world_size)
+    # Estimate total molecules for progress bar
+    total_molecules = None
+    if args.inference_hdf5:
+        try:
+            import h5py
+            with h5py.File(args.inference_hdf5, 'r') as f:
+                if 'metadata' in f and 'num_samples' in f['metadata'].attrs:
+                    total_molecules = f['metadata'].attrs['num_samples']
+                elif 'data' in f:
+                    total_molecules = f['data'].shape[0]
+            
+            if is_main_process() and total_molecules:
+                print(f"📊 Processing {total_molecules:,} molecules from HDF5")
+        except:
+            pass  # Will just not show progress bar
     
-    # Wait for all processes to complete
-    if is_ddp:
-        dist.barrier()
+    # Run inference with progress tracking
+    inference_main(args, device, is_ddp, local_rank, world_size, 
+                   total_molecules=total_molecules)
+    
+    # CRITICAL FIX: Wait for all processes to complete before returning
+    if is_ddp and dist.is_initialized():
+        print(f"[Inference] Rank {local_rank}: Waiting for all ranks to finish...")
+        try:
+            dist.barrier()  # FIXED: Removed timeout parameter
+            print(f"[Inference] Rank {local_rank}: All ranks completed")
+        except Exception as e:
+            print(f"[Inference] Rank {local_rank}: Barrier error: {e}")
     
     results = {
         "mode": "inference",
@@ -148,9 +197,10 @@ def _run_inference_mode(args, device, is_ddp, local_rank, world_size) -> Dict[st
     }
     
     if is_main_process():
-        print("Inference completed successfully.")
+        print("✅ Inference completed successfully")
     
     return results
+
 
 
 def _run_training_mode(args, device, is_ddp, local_rank, world_size) -> Dict[str, Any]:
@@ -178,16 +228,49 @@ def _run_training_mode(args, device, is_ddp, local_rank, world_size) -> Dict[str
     # Run final evaluation
     final_results = _run_final_evaluation(args, model, data_loaders, device, is_ddp, data_info)
     
-    # Save the best model
+    # CRITICAL FIX: Save the best model with proper synchronization
     if is_main_process():
-        print("Saving trained model...")
-        _save_best_model(
-            args, 
-            training_results["model"], 
-            data_info["preprocessing_pipeline"],
-            final_results,
-            is_ddp
-        )
+        print("="*80)
+        print("SAVING TRAINED MODEL")
+        print("="*80)
+        print(f"[Rank 0] Starting model save to: {args.model_save_path}")
+        
+        try:
+            _save_best_model(
+                args, 
+                training_results["model"], 
+                data_info["preprocessing_pipeline"],
+                final_results,
+                is_ddp
+            )
+            
+            # Verify the file actually exists and has content
+            if not os.path.exists(args.model_save_path):
+                raise RuntimeError(f"CRITICAL: Model file NOT FOUND after save: {args.model_save_path}")
+            
+            file_size = os.path.getsize(args.model_save_path)
+            if file_size == 0:
+                raise RuntimeError(f"CRITICAL: Model file is EMPTY: {args.model_save_path}")
+            
+            print(f"✅ [Rank 0] Model saved successfully:")
+            print(f"   Path: {args.model_save_path}")
+            print(f"   Size: {file_size:,} bytes ({file_size/1024/1024:.2f} MB)")
+            
+        except Exception as e:
+            print(f"❌ [Rank 0] FAILED to save model: {e}")
+            raise
+    
+    # CRITICAL FIX: All ranks must wait for rank 0 to finish saving
+    if is_ddp and dist.is_initialized():
+        if not is_main_process():
+            print(f"[Rank {local_rank}] Waiting for rank 0 to finish saving model...")
+        
+        dist.barrier()
+        
+        if is_main_process():
+            print(f"[Rank 0] All ranks synchronized after model save")
+        else:
+            print(f"[Rank {local_rank}] Rank 0 finished saving, continuing...")
     
     # Extract embeddings if requested
     embedding_results = _extract_embeddings_if_requested(args, model, data_loaders, device)
@@ -203,7 +286,6 @@ def _run_training_mode(args, device, is_ddp, local_rank, world_size) -> Dict[str
     }
     
     return results
-
 
 def _load_and_preprocess_data(args) -> Dict[str, Any]:
     """Load and preprocess molecular data with optimized HDF5 handling."""
@@ -999,10 +1081,29 @@ def _save_best_model(args, model: torch.nn.Module, preprocessing_pipeline,
     model_dir = os.path.dirname(os.path.abspath(args.model_save_path))
     if model_dir:
         os.makedirs(model_dir, exist_ok=True)
+        print(f"✓ Output directory ready: {model_dir}")
     
-    # Save model
-    torch.save(model_artifact, args.model_save_path)
-    print(f"✅ Model saved with COMPLETE hyperparameters to: {args.model_save_path}")
+    # CRITICAL FIX: Save with explicit error handling
+    try:
+        print(f"[Rank 0] Writing {len(model_state_dict)} parameter tensors to disk...")
+        torch.save(model_artifact, args.model_save_path)
+        
+        # CRITICAL FIX: Force OS to flush buffers to disk
+        print(f"[Rank 0] Syncing file buffers to disk...")
+        with open(args.model_save_path, 'rb') as f:
+            os.fsync(f.fileno())
+        
+        # Verify the save
+        actual_size = os.path.getsize(args.model_save_path)
+        print(f"✅ Model artifact written and synced to disk")
+        print(f"   File: {args.model_save_path}")
+        print(f"   Size: {actual_size:,} bytes ({actual_size/1024/1024:.2f} MB)")
+        
+    except Exception as e:
+        print(f"❌ CRITICAL ERROR during model save: {e}")
+        print(f"   Attempted path: {args.model_save_path}")
+        raise
+
 
 def _check_hdf5_files_exist(args) -> bool:
     """
@@ -1032,131 +1133,153 @@ def _check_hdf5_files_exist(args) -> bool:
         
     return files_exist
 
-def _load_hdf5_preprocessing_info(args, smiles_train, target_train, smiles_val, target_val, smiles_test, target_test) -> Dict[str, Any]:
+
+def _load_hdf5_preprocessing_info(args, smiles_train, target_train, smiles_val, 
+                                   target_val, smiles_test, target_test) -> Dict[str, Any]:
     """
     Load preprocessing information when HDF5 files already exist.
     
-    CRITICAL FIX: Properly handle missing preprocessing statistics.
+    CRITICAL: HDF5 files MUST contain PREPROCESSED data for training.
+    This function validates that and reconstructs the preprocessing pipeline.
     """
     if is_main_process():
-        print("📋 Reconstructing preprocessing pipeline from existing HDF5 files...")
+        print("="*80)
+        print("LOADING EXISTING HDF5 FILES")
+        print("="*80)
     
-    # Check HDF5 metadata to understand what preprocessing was applied
     train_hdf5_path = args.train_hdf5 or "train.h5"
-    preprocessing_applied = True
-    sae_applied = False
-    scaling_applied = True
-    actual_scaler_means = None
-    actual_scaler_stds = None
-    sae_statistics = None
     
+    # CRITICAL: Validate HDF5 file is readable and has correct format
     try:
         with h5py.File(train_hdf5_path, 'r') as f:
-            if 'metadata' in f:
-                metadata = f['metadata']
-                preprocessing_applied = metadata.attrs.get('preprocessing_applied', True)
-                
-                # Load scaler statistics if available
-                if 'scaler_means' in metadata.attrs:
-                    actual_scaler_means = metadata.attrs['scaler_means']
-                    actual_scaler_stds = metadata.attrs['scaler_stds']
-                    if is_main_process():
-                        print(f"   → Found actual scaler statistics: means={actual_scaler_means}, stds={actual_scaler_stds}")
-                
-                # Load SAE information
-                if 'sae' in metadata:
-                    sae_group = metadata['sae']
-                    sae_applied = sae_group.attrs.get('applied', False)
-                elif 'sae_applied' in metadata.attrs:
-                    sae_applied = metadata.attrs['sae_applied']
-                
-                # Load SAE statistics if available
-                if 'sae_statistics' in metadata.attrs:
-                    import json
+            if 'metadata' not in f:
+                raise ValueError(
+                    f"HDF5 file {train_hdf5_path} is missing metadata section.\n\n"
+                    "This file is CORRUPTED or created with an incompatible version.\n\n"
+                    "SOLUTION:\n"
+                    "1. Delete the HDF5 files:\n"
+                    f"   rm {args.train_hdf5} {args.val_hdf5} {args.test_hdf5}\n\n"
+                    "2. Re-run training - files will be recreated automatically"
+                )
+            
+            metadata = f['metadata']
+            
+            # CRITICAL: Check preprocessing status
+            preprocessing_applied = metadata.attrs.get('preprocessing_applied', None)
+            
+            if preprocessing_applied is None:
+                raise ValueError(
+                    f"Cannot determine if {train_hdf5_path} contains preprocessed data.\n\n"
+                    "The 'preprocessing_applied' flag is missing from metadata.\n\n"
+                    "SOLUTION: Delete HDF5 files and recreate:\n"
+                    f"  rm {args.train_hdf5} {args.val_hdf5} {args.test_hdf5}\n"
+                    "  Then re-run training."
+                )
+            
+            if not preprocessing_applied:
+                raise ValueError(
+                    f"CRITICAL: {train_hdf5_path} contains RAW (unpreprocessed) data!\n\n"
+                    "For TRAINING, HDF5 files MUST contain PREPROCESSED data.\n"
+                    "For INFERENCE, HDF5 files MUST contain RAW data.\n\n"
+                    "You are trying to TRAIN, so you need preprocessed data.\n\n"
+                    "SOLUTION:\n"
+                    "1. Delete the current HDF5 files:\n"
+                    f"   rm {args.train_hdf5} {args.val_hdf5} {args.test_hdf5}\n\n"
+                    "2. Re-run training - files will be recreated with preprocessing"
+                )
+            
+            # Load scaler statistics
+            if 'scaler_means' not in metadata.attrs:
+                raise ValueError(
+                    f"{train_hdf5_path} is missing scaler statistics in metadata.\n\n"
+                    "The preprocessing pipeline cannot be reconstructed.\n\n"
+                    "SOLUTION: Delete HDF5 files and recreate:\n"
+                    f"  rm {args.train_hdf5} {args.val_hdf5} {args.test_hdf5}"
+                )
+            
+            actual_scaler_means = np.array(metadata.attrs['scaler_means'])
+            actual_scaler_stds = np.array(metadata.attrs['scaler_stds'])
+            
+            # Validate scaler statistics are reasonable
+            if np.any(np.isnan(actual_scaler_means)) or np.any(np.isnan(actual_scaler_stds)):
+                raise ValueError(
+                    f"Scaler statistics in {train_hdf5_path} contain NaN values!\n\n"
+                    "The HDF5 file is CORRUPTED.\n\n"
+                    "SOLUTION: Delete and recreate HDF5 files."
+                )
+            
+            if np.any(actual_scaler_stds <= 0):
+                raise ValueError(
+                    f"Scaler standard deviations in {train_hdf5_path} are <= 0!\n\n"
+                    "This means your data has zero variance (all same values).\n\n"
+                    "Check your input CSV files for data problems."
+                )
+            
+            # Load SAE information if present
+            sae_applied = metadata.attrs.get('sae_applied', False)
+            sae_statistics = None
+            
+            if sae_applied and 'sae_statistics' in metadata.attrs:
+                import json
+                try:
                     sae_data = json.loads(metadata.attrs['sae_statistics'])
-                    # Convert back to proper format
                     sae_statistics = {}
                     for key, value in sae_data.items():
                         if isinstance(value, dict):
-                            # Convert string keys back to integers
-                            sae_statistics[key if key == "regression" else int(key)] = {int(k): float(v) for k, v in value.items()}
+                            sae_statistics[key if key == "regression" else int(key)] = {
+                                int(k): float(v) for k, v in value.items()
+                            }
                         else:
                             sae_statistics[key if key == "regression" else int(key)] = float(value)
-                    if is_main_process():
-                        print(f"   → Found SAE statistics with {len(sae_statistics)} task(s)")
-                        
-            if is_main_process():
-                print(f"   → HDF5 metadata indicates: preprocessing_applied={preprocessing_applied}")
-                print(f"   → SAE applied: {sae_applied}")
-                print(f"   → Standard scaling applied: {scaling_applied}")
-                
-    except Exception as e:
-        if is_main_process():
-            print(f"   ⚠️  Could not read HDF5 metadata: {e}")
-            print("   → Will attempt to create preprocessing pipeline from arguments")
-    
-    # Reconstruct the preprocessing pipeline with actual statistics
-    if preprocessing_applied:
-        # Create preprocessing config
-        preprocessing_config = PreprocessingConfig(
-            apply_sae=args.calculate_sae and sae_applied,
-            sae_subtasks=args.sae_subtasks_list,
-            apply_standard_scaling=True,  # Assume scaling was applied for HDF5
-            task_type=args.task_type,
-            sae_percentile_cutoff=2.0
+                except Exception as e:
+                    raise ValueError(
+                        f"Failed to load SAE statistics from {train_hdf5_path}.\n"
+                        f"Error: {e}\n\n"
+                        "The HDF5 file may be corrupted.\n\n"
+                        "SOLUTION: Delete and recreate HDF5 files."
+                    )
+                    
+    except OSError as e:
+        raise ValueError(
+            f"Cannot open HDF5 file: {train_hdf5_path}\n"
+            f"Error: {e}\n\n"
+            "The file may be corrupted, locked by another process, or permissions issue.\n\n"
+            "SOLUTION:\n"
+            "1. Make sure no other training process is running\n"
+            "2. Check file permissions\n"
+            "3. If problem persists, delete and recreate:\n"
+            f"   rm {train_hdf5_path}"
         )
-        
-        # Create pipeline
-        preprocessing_pipeline = PreprocessingPipeline(preprocessing_config)
-        
-        # Reconstruct SAE normalizer with actual statistics
-        if preprocessing_config.apply_sae and sae_statistics:
-            preprocessing_pipeline.sae_normalizer = SAENormalizer(
-                task_type=preprocessing_config.task_type,
-                percentile_cutoff=preprocessing_config.sae_percentile_cutoff
-            )
-            preprocessing_pipeline.sae_normalizer.sae_statistics = sae_statistics
-            preprocessing_pipeline.sae_normalizer.is_fitted = True
-            
-            if is_main_process():
-                print("   → Restored SAE normalizer with actual statistics")
-        elif preprocessing_config.apply_sae:
-            # CRITICAL FIX: Raise error instead of creating dummy normalizer
-            raise ValueError(
-                "SAE normalization was requested but no SAE statistics found in HDF5 files. "
-                "Cannot perform training without proper SAE statistics. "
-                "Please recreate HDF5 files with SAE preprocessing."
-            )
-        
-        # Reconstruct standard scaler with actual statistics
-        if preprocessing_config.apply_standard_scaling:
-            preprocessing_pipeline.standard_scaler = StandardScaler()
-            
-            if actual_scaler_means is not None and actual_scaler_stds is not None:
-                # Use actual statistics from HDF5
-                preprocessing_pipeline.standard_scaler.means = np.array(actual_scaler_means)
-                preprocessing_pipeline.standard_scaler.stds = np.array(actual_scaler_stds)
-                if is_main_process():
-                    print(f"   → Restored standard scaler with actual statistics")
-            else:
-                # CRITICAL FIX: Raise error instead of using dummy values
-                raise ValueError(
-                    "Standard scaling was requested but no scaler statistics found in HDF5 files. "
-                    "Cannot perform training without proper scaling statistics. "
-                    "Please recreate HDF5 files with preprocessing metadata."
-                )
-            
-            preprocessing_pipeline.standard_scaler.is_fitted = True
-        
-        preprocessing_pipeline.is_fitted = True
-        
-        if is_main_process():
-            print("   → Preprocessing pipeline reconstructed successfully")
-    else:
-        # No preprocessing was applied to HDF5 data
-        preprocessing_pipeline = None
-        if is_main_process():
-            print("   → No preprocessing pipeline needed")
+    
+    # Reconstruct the preprocessing pipeline
+    preprocessing_config = PreprocessingConfig(
+        apply_sae=sae_applied,
+        sae_subtasks=args.sae_subtasks_list,
+        apply_standard_scaling=True,
+        task_type=args.task_type,
+        sae_percentile_cutoff=2.0
+    )
+    
+    preprocessing_pipeline = PreprocessingPipeline(preprocessing_config)
+    
+    # Restore SAE normalizer if used
+    if sae_applied and sae_statistics:
+        from data.preprocessing import SAENormalizer
+        preprocessing_pipeline.sae_normalizer = SAENormalizer(
+            task_type=preprocessing_config.task_type,
+            percentile_cutoff=preprocessing_config.sae_percentile_cutoff
+        )
+        preprocessing_pipeline.sae_normalizer.sae_statistics = sae_statistics
+        preprocessing_pipeline.sae_normalizer.is_fitted = True
+    
+    # Restore standard scaler
+    from data.preprocessing import StandardScaler
+    preprocessing_pipeline.standard_scaler = StandardScaler()
+    preprocessing_pipeline.standard_scaler.means = actual_scaler_means
+    preprocessing_pipeline.standard_scaler.stds = actual_scaler_stds
+    preprocessing_pipeline.standard_scaler.is_fitted = True
+    
+    preprocessing_pipeline.is_fitted = True
     
     # Get number of tasks
     if args.task_type == 'multitask':
@@ -1164,26 +1287,27 @@ def _load_hdf5_preprocessing_info(args, smiles_train, target_train, smiles_val, 
     else:
         num_tasks = 1
     
-    # Use original targets since HDF5 contains preprocessed data
-    data_info = {
+    if is_main_process():
+        print(f"✓ Successfully loaded preprocessing pipeline from HDF5")
+        print(f"  • SAE applied: {sae_applied}")
+        print(f"  • Scaler means: {actual_scaler_means}")
+        print(f"  • Scaler stds: {actual_scaler_stds}")
+        print(f"  • Number of tasks: {num_tasks}")
+        print("="*80 + "\n")
+    
+    return {
         "smiles_train": smiles_train,
         "smiles_val": smiles_val,
         "smiles_test": smiles_test,
-        "target_train": target_train,  # Original targets (HDF5 has preprocessed)
-        "target_val": target_val,      # Original targets (HDF5 has preprocessed)
-        "target_test": target_test,    # Original targets (HDF5 has preprocessed)
+        "target_train": target_train,  # Original for reference
+        "target_val": target_val,
+        "target_test": target_test,
         "num_tasks": num_tasks,
         "preprocessing_pipeline": preprocessing_pipeline,
         "max_hops": args.num_shells,
         "preprocessing_done": True,
-        "hdf5_preprocessed": True,  # Flag to indicate HDF5 contains preprocessed data
+        "hdf5_contains_preprocessed_data": True,
     }
-    
-    if is_main_process():
-        print(f"✅ Loaded data info for {len(smiles_train)} train, {len(smiles_val)} val, {len(smiles_test)} test samples")
-        print("   → HDF5 files contain preprocessed data ready for training")
-    
-    return data_info
 
 def run_single_trial(args) -> Dict[str, Any]:
     """
