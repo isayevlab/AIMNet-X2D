@@ -11,10 +11,6 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from src.utils.logging import get_logger
-
-logger = get_logger(__name__)
-
 
 def scatter_add(
     src: Tensor,
