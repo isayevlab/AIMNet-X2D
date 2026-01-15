@@ -559,7 +559,7 @@ def _handle_epoch_end_fixed(
         else:
             patience_counter = new_patience_counter
             if is_main_process():
-                logger.debug(f"No improvement for {patience_counter}/{patience} epochs")
+                logger.info(f"No improvement for {patience_counter}/{patience} epochs")
 
         # Log current epoch metrics
         _print_epoch_progress(epoch, val_metrics, epoch_train_loss, optimizer, task_type)

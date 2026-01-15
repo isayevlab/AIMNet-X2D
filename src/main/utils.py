@@ -210,7 +210,7 @@ def log_system_info() -> None:
         logger.info(f"Total memory: {memory.total / (1024**3):.2f} GB")
         logger.info(f"Available memory: {memory.available / (1024**3):.2f} GB")
     except ImportError:
-        logger.debug("Memory info unavailable (psutil not installed)")
+        logger.info("Memory info unavailable (install psutil for detailed memory tracking)")
 
     logger.info("=" * 60)
 
@@ -397,7 +397,7 @@ def setup_experiment_logging(args: argparse.Namespace) -> Any | None:
         wandb_config = prepare_wandb_config(args)
         
         # Setup tags
-        tags = ["aimnet-x2d"]  # FIXED: was unclear naming
+        tags = ["aimnet-x2d"]
         if args.wandb_tags_list:
             tags.extend(args.wandb_tags_list)
         
