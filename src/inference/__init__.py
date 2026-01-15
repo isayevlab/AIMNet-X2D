@@ -10,6 +10,7 @@ from .engine import InferenceEngine
 from .pipeline import InferencePipeline
 from .config import InferenceConfig
 from .model_loader import ModelLoader
+from .results_writer import ResultsWriter
 from .uncertainty import MCDropoutPredictor, UncertaintyEstimator
 from .embeddings import EmbeddingExtractor, StreamingEmbeddingWriter
 from .preprocessing import PreprocessingReconstructor
@@ -23,6 +24,7 @@ __all__ = [
     "InferencePipeline",
     "InferenceConfig",
     "ModelLoader",
+    "ResultsWriter",
 
     # Uncertainty estimation
     "MCDropoutPredictor",
