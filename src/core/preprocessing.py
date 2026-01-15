@@ -89,7 +89,7 @@ class SAETransform:
         atom_counts: torch.Tensor,
         targets: torch.Tensor,
     ) -> torch.Tensor:
-        """Apply SAE normalization to batch (GPU-native)."""
+        """Apply SAE normalization to batch (GPU-native, vectorized)."""
         device = targets.device
         batch_size, max_atoms = atomic_numbers.shape
 
@@ -101,12 +101,15 @@ class SAETransform:
         sae_values = sae_lookup[atomic_numbers.clamp(0, self.max_atomic_num - 1)]
         sae_values = sae_values * valid_mask.float()
 
-        sae_shifts = sae_values.sum(dim=1, keepdim=True)
+        sae_shifts = sae_values.sum(dim=1)  # [batch_size]
 
+        # Vectorized subtask application using advanced indexing
         result = targets.clone()
-        for subtask_idx in self.subtasks:
-            if subtask_idx < result.shape[1]:
-                result[:, subtask_idx] = result[:, subtask_idx] - sae_shifts.squeeze(1)
+        subtask_indices = torch.tensor(self.subtasks, device=device, dtype=torch.long)
+        valid_subtasks = subtask_indices[subtask_indices < result.shape[1]]
+
+        if valid_subtasks.numel() > 0:
+            result[:, valid_subtasks] = result[:, valid_subtasks] - sae_shifts.unsqueeze(1)
 
         return result
 
@@ -116,7 +119,7 @@ class SAETransform:
         atom_counts: torch.Tensor,
         normalized: torch.Tensor,
     ) -> torch.Tensor:
-        """Inverse SAE transformation (GPU-native)."""
+        """Inverse SAE transformation (GPU-native, vectorized)."""
         device = normalized.device
         batch_size, max_atoms = atomic_numbers.shape
 
@@ -127,12 +130,15 @@ class SAETransform:
 
         sae_values = sae_lookup[atomic_numbers.clamp(0, self.max_atomic_num - 1)]
         sae_values = sae_values * valid_mask.float()
-        sae_shifts = sae_values.sum(dim=1, keepdim=True)
+        sae_shifts = sae_values.sum(dim=1)  # [batch_size]
 
+        # Vectorized subtask application using advanced indexing
         result = normalized.clone()
-        for subtask_idx in self.subtasks:
-            if subtask_idx < result.shape[1]:
-                result[:, subtask_idx] = result[:, subtask_idx] + sae_shifts.squeeze(1)
+        subtask_indices = torch.tensor(self.subtasks, device=device, dtype=torch.long)
+        valid_subtasks = subtask_indices[subtask_indices < result.shape[1]]
+
+        if valid_subtasks.numel() > 0:
+            result[:, valid_subtasks] = result[:, valid_subtasks] + sae_shifts.unsqueeze(1)
 
         return result
 

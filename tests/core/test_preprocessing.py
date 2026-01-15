@@ -166,3 +166,44 @@ class TestPreprocessingPipeline:
         )
 
         assert torch.allclose(recovered, targets_tensor, atol=1e-4)
+
+
+def test_sae_transform_vectorized_multiple_subtasks():
+    """Test SAE transform correctly applies to multiple subtasks."""
+    from src.core.preprocessing import SAETransform
+
+    # Create SAE transform with multiple subtasks
+    sae_dict = {6: -38.0, 1: -0.5, 8: -75.0}  # C, H, O
+    subtasks = [0, 2, 4]  # Apply to columns 0, 2, 4
+
+    transform = SAETransform(sae_dict=sae_dict, subtasks=subtasks)
+
+    # Batch: 2 molecules with padded atomic numbers
+    # Mol 1: CH4 (5 atoms), Mol 2: H2O (3 atoms)
+    atomic_numbers = torch.tensor([
+        [6, 1, 1, 1, 1],  # CH4
+        [8, 1, 1, 0, 0],  # H2O (padded)
+    ], dtype=torch.int64)
+    atom_counts = torch.tensor([5, 3], dtype=torch.int64)
+
+    # 5 target columns
+    targets = torch.tensor([
+        [100.0, 50.0, 200.0, 75.0, 300.0],
+        [150.0, 60.0, 250.0, 80.0, 350.0],
+    ], dtype=torch.float32)
+
+    result = transform.transform_batch(atomic_numbers, atom_counts, targets)
+
+    # Expected SAE shifts:
+    # CH4: -38.0 + 4*(-0.5) = -40.0
+    # H2O: -75.0 + 2*(-0.5) = -76.0
+
+    # Column 0: 100 - (-40) = 140, 150 - (-76) = 226
+    # Column 2: 200 - (-40) = 240, 250 - (-76) = 326
+    # Column 4: 300 - (-40) = 340, 350 - (-76) = 426
+    # Columns 1, 3: unchanged
+
+    assert torch.isclose(result[0, 0], torch.tensor(140.0))
+    assert torch.isclose(result[0, 1], torch.tensor(50.0))  # unchanged
+    assert torch.isclose(result[0, 2], torch.tensor(240.0))
+    assert torch.isclose(result[1, 0], torch.tensor(226.0))
