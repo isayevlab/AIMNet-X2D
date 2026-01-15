@@ -31,6 +31,93 @@ import h5py
 logger = get_logger(__name__)
 
 
+def _check_hdf5_max_hops_compatibility(
+    hdf5_max_hops: int,
+    model_num_shells: int
+) -> str | None:
+    """Check max_hops compatibility. Returns error message or None if compatible."""
+    if hdf5_max_hops != model_num_shells:
+        return (
+            f"CRITICAL: Max hops mismatch!\n"
+            f"   HDF5 file: {hdf5_max_hops} hops\n"
+            f"   Model expects: {model_num_shells} hops\n"
+            f"   \n"
+            f"   This is a FATAL incompatibility - the molecular features\n"
+            f"   in the HDF5 file do not match what the model was trained on.\n"
+            f"   \n"
+            f"   The HDF5 file contains BFS features computed to depth {hdf5_max_hops},\n"
+            f"   but the model expects features computed to depth {model_num_shells}.\n"
+            f"   These are fundamentally different graph representations.\n"
+            f"   \n"
+            f"   You MUST recreate the HDF5 file with --num_shells={model_num_shells}"
+        )
+    return None
+
+
+def _check_hdf5_preprocessing_compatibility(
+    hdf5_has_preprocessing: bool,
+    model_has_preprocessing: bool
+) -> str | None:
+    """Check preprocessing compatibility. Returns error message or None if compatible."""
+    if hdf5_has_preprocessing and not model_has_preprocessing:
+        return (
+            "HDF5 file has preprocessing applied but model has no preprocessing pipeline. "
+            "This will produce incorrect results. Regenerate HDF5 without preprocessing."
+        )
+    return None
+
+
+def _check_hdf5_task_type_compatibility(
+    hdf5_task_type: str,
+    model_task_type: str
+) -> str | None:
+    """Check task type compatibility. Returns error message or None if compatible."""
+    if hdf5_task_type != model_task_type:
+        return (
+            f"Task type mismatch:\n"
+            f"   HDF5: {hdf5_task_type}\n"
+            f"   Model: {model_task_type}"
+        )
+    return None
+
+
+def _check_hdf5_inference_data_compatibility(
+    preprocessing_applied: bool
+) -> str | None:
+    """Check if HDF5 contains raw data suitable for inference. Returns error message or None if compatible."""
+    if preprocessing_applied:
+        return (
+            "HDF5 contains PREPROCESSED data\n"
+            "   Inference requires RAW data\n"
+            "   Use create_inference_hdf5.py to create proper HDF5"
+        )
+    return None
+
+
+def _format_compatibility_error(
+    errors: list[str],
+    model_path: str,
+    input_path: str
+) -> str:
+    """Format compatibility errors into a detailed error message."""
+    error_msg = "\n" + "=" * 60 + "\n"
+    error_msg += "HDF5 FILE IS INCOMPATIBLE WITH MODEL\n"
+    error_msg += "=" * 60 + "\n\n"
+    for i, e in enumerate(errors, 1):
+        error_msg += f"{i}. {e}\n\n"
+    error_msg += "=" * 60 + "\n"
+    error_msg += "SOLUTION:\n"
+    error_msg += "=" * 60 + "\n"
+    error_msg += f"Recreate the HDF5 file with matching parameters:\n\n"
+    error_msg += f"  python create_inference_hdf5.py \\\n"
+    error_msg += f"    --model_path {model_path} \\\n"
+    error_msg += f"    --input_csv YOUR_DATA.csv \\\n"
+    error_msg += f"    --output_hdf5 {input_path} \\\n"
+    error_msg += f"    --smiles_column smiles\n"
+    error_msg += "=" * 60 + "\n"
+    return error_msg
+
+
 class InferencePipeline:
     """Main inference pipeline that orchestrates the entire process."""
 
@@ -158,10 +245,66 @@ class InferencePipeline:
             logger.warning(f"Using model's num_shells value: {hyperparams.get('num_shells')}")
             self.config.max_hops = hyperparams.get('num_shells')
 
+    def _get_model_parameters(self) -> tuple[int | None, str | None]:
+        """Extract model parameters handling DDP wrapper."""
+        model_max_hops = self.model.num_shells if hasattr(self.model, 'num_shells') else None
+        if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+            model_max_hops = self.model.module.num_shells if hasattr(self.model.module, 'num_shells') else None
+
+        model_task_type = self.model.task_type if hasattr(self.model, 'task_type') else None
+        if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+            model_task_type = self.model.module.task_type if hasattr(self.model.module, 'task_type') else None
+
+        return model_max_hops, model_task_type
+
+    def _check_compatibility_metadata(
+        self,
+        compat: Any,
+        model_max_hops: int | None,
+        model_task_type: str | None
+    ) -> list[str]:
+        """Check compatibility metadata and return list of errors."""
+        errors = []
+
+        # Check max_hops compatibility
+        if 'max_hops' in compat.attrs and model_max_hops is not None:
+            hdf5_max_hops = int(compat.attrs['max_hops'])
+            error = _check_hdf5_max_hops_compatibility(hdf5_max_hops, model_max_hops)
+            if error:
+                errors.append(error)
+
+        # Check task type compatibility
+        if 'task_type' in compat.attrs and model_task_type is not None:
+            hdf5_task_type = str(compat.attrs['task_type'])
+            error = _check_hdf5_task_type_compatibility(hdf5_task_type, model_task_type)
+            if error:
+                errors.append(error)
+
+        # Check preprocessing status
+        if 'preprocessing_applied' in compat.attrs:
+            error = _check_hdf5_inference_data_compatibility(compat.attrs['preprocessing_applied'])
+            if error:
+                errors.append(error)
+
+        # Check if marked for inference
+        if 'for_inference' in compat.attrs:
+            if not compat.attrs['for_inference']:
+                logger.warning("HDF5 not marked for inference")
+                logger.warning("This file may have been created for training")
+
+        return errors
+
+    def _log_compatibility_success(self, compat: Any) -> None:
+        """Log successful compatibility check."""
+        logger.info("HDF5 file is COMPATIBLE with model")
+        logger.info(f"   Max hops: {compat.attrs.get('max_hops', 'N/A')}")
+        logger.info(f"   Task type: {compat.attrs.get('task_type', 'N/A')}")
+        preprocessing_status = 'Applied' if compat.attrs.get('preprocessing_applied', False) else 'RAW (will apply during inference)'
+        logger.info(f"   Preprocessing: {preprocessing_status}")
+        logger.info(f"   For inference: {compat.attrs.get('for_inference', 'N/A')}")
+
     def _verify_hdf5_model_compatibility(self) -> None:
-        """
-        CRITICAL: Verify HDF5 file is compatible with loaded model.
-        """
+        """Verify HDF5 file is compatible with loaded model."""
         if not hasattr(self.config, 'input_path'):
             return
 
@@ -181,89 +324,19 @@ class InferencePipeline:
                     return
 
                 metadata = f['metadata']
+                model_max_hops, model_task_type = self._get_model_parameters()
 
-                # Get model parameters
-                model_max_hops = self.model.num_shells if hasattr(self.model, 'num_shells') else None
-                if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
-                    model_max_hops = self.model.module.num_shells if hasattr(self.model.module, 'num_shells') else None
-
-                model_task_type = self.model.task_type if hasattr(self.model, 'task_type') else None
-                if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
-                    model_task_type = self.model.module.task_type if hasattr(self.model.module, 'task_type') else None
-
-                # Check if this HDF5 has compatibility metadata
                 if 'model_compatibility' in metadata:
                     compat = metadata['model_compatibility']
-                    errors = []
-
-                    # CRITICAL FIX: Check max_hops as HARD ERROR
-                    if 'max_hops' in compat.attrs and model_max_hops is not None:
-                        hdf5_max_hops = int(compat.attrs['max_hops'])
-                        if hdf5_max_hops != model_max_hops:
-                            errors.append(
-                                f"CRITICAL: Max hops mismatch!\n"
-                                f"   HDF5 file: {hdf5_max_hops} hops\n"
-                                f"   Model expects: {model_max_hops} hops\n"
-                                f"   \n"
-                                f"   This is a FATAL incompatibility - the molecular features\n"
-                                f"   in the HDF5 file do not match what the model was trained on.\n"
-                                f"   \n"
-                                f"   The HDF5 file contains BFS features computed to depth {hdf5_max_hops},\n"
-                                f"   but the model expects features computed to depth {model_max_hops}.\n"
-                                f"   These are fundamentally different graph representations.\n"
-                                f"   \n"
-                                f"   You MUST recreate the HDF5 file with --num_shells={model_max_hops}"
-                            )
-
-                    # Check task type
-                    if 'task_type' in compat.attrs and model_task_type is not None:
-                        hdf5_task_type = str(compat.attrs['task_type'])
-                        if hdf5_task_type != model_task_type:
-                            errors.append(
-                                f"Task type mismatch:\n"
-                                f"   HDF5: {hdf5_task_type}\n"
-                                f"   Model: {model_task_type}"
-                            )
-
-                    # Check preprocessing status (CRITICAL for inference)
-                    if 'preprocessing_applied' in compat.attrs:
-                        if compat.attrs['preprocessing_applied']:
-                            errors.append(
-                                "HDF5 contains PREPROCESSED data\n"
-                                "   Inference requires RAW data\n"
-                                "   Use create_inference_hdf5.py to create proper HDF5"
-                            )
-
-                    # Check if marked for inference
-                    if 'for_inference' in compat.attrs:
-                        if not compat.attrs['for_inference']:
-                            logger.warning("HDF5 not marked for inference")
-                            logger.warning("This file may have been created for training")
+                    errors = self._check_compatibility_metadata(compat, model_max_hops, model_task_type)
 
                     if errors:
-                        error_msg = "\n" + "=" * 60 + "\n"
-                        error_msg += "HDF5 FILE IS INCOMPATIBLE WITH MODEL\n"
-                        error_msg += "=" * 60 + "\n\n"
-                        for i, e in enumerate(errors, 1):
-                            error_msg += f"{i}. {e}\n\n"
-                        error_msg += "=" * 60 + "\n"
-                        error_msg += "SOLUTION:\n"
-                        error_msg += "=" * 60 + "\n"
-                        error_msg += f"Recreate the HDF5 file with matching parameters:\n\n"
-                        error_msg += f"  python create_inference_hdf5.py \\\n"
-                        error_msg += f"    --model_path {self.config.model_path} \\\n"
-                        error_msg += f"    --input_csv YOUR_DATA.csv \\\n"
-                        error_msg += f"    --output_hdf5 {self.config.input_path} \\\n"
-                        error_msg += f"    --smiles_column smiles\n"
-                        error_msg += "=" * 60 + "\n"
+                        error_msg = _format_compatibility_error(
+                            errors, self.config.model_path, self.config.input_path
+                        )
                         raise ValueError(error_msg)
 
-                    logger.info("HDF5 file is COMPATIBLE with model")
-                    logger.info(f"   Max hops: {compat.attrs.get('max_hops', 'N/A')}")
-                    logger.info(f"   Task type: {compat.attrs.get('task_type', 'N/A')}")
-                    logger.info(f"   Preprocessing: {'Applied' if compat.attrs.get('preprocessing_applied', False) else 'RAW (will apply during inference)'}")
-                    logger.info(f"   For inference: {compat.attrs.get('for_inference', 'N/A')}")
-
+                    self._log_compatibility_success(compat)
                 else:
                     # Old format - basic checks only
                     logger.warning("HDF5 missing model_compatibility metadata")
@@ -277,8 +350,7 @@ class InferencePipeline:
                         )
                     logger.info("Basic validation passed")
 
-        except ValueError as e:
-            # Re-raise ValueError (our compatibility errors)
+        except ValueError:
             raise
         except Exception as e:
             logger.warning(f"Could not verify HDF5 compatibility: {e}")

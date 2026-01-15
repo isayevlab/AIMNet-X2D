@@ -25,6 +25,53 @@ from .evaluator import evaluate
 logger = get_logger(__name__)
 
 
+def _update_learning_rate(
+    scheduler: Any | None,
+    val_loss: float,
+    scheduler_name: str
+) -> None:
+    """Step the learning rate scheduler based on validation loss."""
+    if scheduler is None:
+        return
+    if scheduler_name == 'reduce_on_plateau':
+        scheduler.step(val_loss)
+    else:
+        scheduler.step()
+
+
+def _check_early_stopping(
+    val_loss: float,
+    best_val_loss: float,
+    patience_counter: int,
+    patience: int,
+    min_delta: float = 0.0
+) -> tuple[float, int, bool, bool]:
+    """
+    Check early stopping condition.
+
+    Returns: (new_best_loss, new_patience_counter, is_best, should_stop)
+    """
+    is_best = val_loss < best_val_loss - min_delta
+    if is_best:
+        return val_loss, 0, True, False
+    else:
+        new_counter = patience_counter + 1
+        should_stop = new_counter >= patience
+        return best_val_loss, new_counter, False, should_stop
+
+
+def _broadcast_early_stopping_decision(
+    should_stop: bool,
+    is_distributed: bool,
+    device: torch.device
+) -> bool:
+    """Broadcast early stopping decision across DDP ranks."""
+    if not is_distributed:
+        return should_stop
+
+    stop_tensor = torch.tensor([1 if should_stop else 0], device=device)
+    dist.broadcast(stop_tensor, src=0)
+    return stop_tensor.item() == 1
 
 
 def _setup_loss_function(
@@ -356,6 +403,112 @@ def train_gnn(
 
     return model
 
+def _save_best_model_state(
+    model: nn.Module,
+    val_metrics: dict[str, Any],
+    epoch: int
+) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    """
+    Save the best model state and metrics.
+
+    Returns: (best_model_state, best_metrics)
+    """
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        best_model_state = {k: v.cpu().clone() for k, v in model.module.state_dict().items()}
+    else:
+        best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+
+    best_metrics = {
+        'best_epoch': epoch + 1,
+        'best_val_loss': val_metrics['loss'],
+        **{f"best_val_{k}": v for k, v in val_metrics.items()},
+    }
+
+    return best_model_state, best_metrics
+
+
+def _log_wandb_metrics(
+    epoch: int,
+    epoch_train_loss: float,
+    epoch_duration: float,
+    val_metrics: dict[str, Any],
+    optimizer: torch.optim.Optimizer,
+    patience_counter: int,
+    best_val_loss: float,
+    task_type: str
+) -> None:
+    """Log metrics to wandb."""
+    wandb_dict = {
+        "epoch": epoch + 1,
+        "train_loss": epoch_train_loss,
+        "learning_rate": optimizer.param_groups[0]['lr'],
+        "val_loss": val_metrics['loss'],
+        "epoch_time": epoch_duration,
+        "patience_counter": patience_counter,
+        "best_val_loss": best_val_loss,
+    }
+
+    if task_type == 'multitask':
+        wandb_dict.update({
+            "val_mae_avg": val_metrics.get('mae'),
+            "val_rmse_avg": val_metrics.get('rmse'),
+            "val_r2_avg": val_metrics.get('r2'),
+        })
+        if 'mae_per_target' in val_metrics:
+            for i, mae_i in enumerate(val_metrics['mae_per_target']):
+                wandb_dict[f"val_mae_target_{i}"] = mae_i
+            for i, rmse_i in enumerate(val_metrics['rmse_per_target']):
+                wandb_dict[f"val_rmse_target_{i}"] = rmse_i
+            for i, r2_i in enumerate(val_metrics['r2_per_target']):
+                wandb_dict[f"val_r2_target_{i}"] = r2_i
+    else:
+        wandb_dict.update({
+            "val_mae": val_metrics.get('mae'),
+            "val_rmse": val_metrics.get('rmse'),
+            "val_r2": val_metrics.get('r2'),
+        })
+
+    if is_main_process():
+        wandb.log(wandb_dict)
+
+
+def _broadcast_training_state(
+    stop_training: bool,
+    best_val_loss: float,
+    patience_counter: int,
+    best_epoch: int,
+    is_ddp: bool,
+    device: torch.device
+) -> tuple[bool, float, int, int]:
+    """
+    Broadcast training state across DDP ranks.
+
+    Returns: (stop_training, best_val_loss, patience_counter, best_epoch)
+    """
+    if not (is_ddp and dist.is_initialized()):
+        return stop_training, best_val_loss, patience_counter, best_epoch
+
+    # Create tensors for broadcasting
+    stop_tensor = torch.tensor([1 if stop_training else 0], dtype=torch.uint8, device=device)
+    best_loss_tensor = torch.tensor([best_val_loss], dtype=torch.float, device=device)
+    patience_tensor = torch.tensor([patience_counter], dtype=torch.int, device=device)
+    best_epoch_tensor = torch.tensor([best_epoch], dtype=torch.int, device=device)
+
+    # Broadcast from rank 0
+    dist.broadcast(stop_tensor, src=0)
+    dist.broadcast(best_loss_tensor, src=0)
+    dist.broadcast(patience_tensor, src=0)
+    dist.broadcast(best_epoch_tensor, src=0)
+
+    # Return updated values
+    return (
+        stop_tensor.item() == 1,
+        best_loss_tensor.item(),
+        patience_tensor.item(),
+        best_epoch_tensor.item()
+    )
+
+
 def _handle_epoch_end_fixed(
     model: nn.Module,
     val_metrics: dict[str, Any],
@@ -375,7 +528,7 @@ def _handle_epoch_end_fixed(
     is_ddp: bool
 ) -> tuple[bool, float, int, dict[str, torch.Tensor] | None, dict[str, Any] | None, int]:
     """
-    FIXED: Handle end-of-epoch processing with proper return values.
+    Handle end-of-epoch processing with proper return values.
 
     Returns:
         Tuple of (stop_training, best_val_loss, patience_counter,
@@ -387,33 +540,24 @@ def _handle_epoch_end_fixed(
 
     # Only main process handles early stopping logic
     if (not dist.is_initialized()) or (safe_get_rank() == 0):
-        
-        # Check if this is the best model so far
-        if current_val_loss < best_val_loss:
-            # Update best metrics
-            best_val_loss = current_val_loss
+        # Check early stopping condition using helper
+        new_best_loss, new_patience_counter, is_best, _ = _check_early_stopping(
+            val_loss=current_val_loss,
+            best_val_loss=best_val_loss,
+            patience_counter=patience_counter,
+            patience=patience
+        )
+
+        if is_best:
+            best_val_loss = new_best_loss
             best_epoch = epoch + 1
-            patience_counter = 0  # Reset patience
-            
-            # Save best model state
-            if isinstance(model, torch.nn.parallel.DistributedDataParallel):
-                best_model_state = {k: v.cpu().clone() for k, v in model.module.state_dict().items()}
-            else:
-                best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            
-            # Update best metrics for logging
-            best_metrics = {
-                'best_epoch': best_epoch,
-                'best_val_loss': best_val_loss,
-                **{f"best_val_{k}": v for k, v in val_metrics.items()},
-            }
-            
+            patience_counter = 0
+            best_model_state, best_metrics = _save_best_model_state(model, val_metrics, epoch)
+
             if is_main_process():
                 logger.info(f"New best model at epoch {best_epoch}: val_loss = {best_val_loss:.6f}")
-
         else:
-            # No improvement
-            patience_counter += 1
+            patience_counter = new_patience_counter
             if is_main_process():
                 logger.debug(f"No improvement for {patience_counter}/{patience} epochs")
 
@@ -422,67 +566,35 @@ def _handle_epoch_end_fixed(
 
         # Log to wandb if enabled
         if current_args.enable_wandb:
-            wandb_dict = {
-                "epoch": epoch + 1,
-                "train_loss": epoch_train_loss,
-                "learning_rate": optimizer.param_groups[0]['lr'],
-                "val_loss": current_val_loss,
-                "epoch_time": epoch_duration,
-                "patience_counter": patience_counter,
-                "best_val_loss": best_val_loss,
-            }
+            _log_wandb_metrics(
+                epoch=epoch,
+                epoch_train_loss=epoch_train_loss,
+                epoch_duration=epoch_duration,
+                val_metrics=val_metrics,
+                optimizer=optimizer,
+                patience_counter=patience_counter,
+                best_val_loss=best_val_loss,
+                task_type=task_type
+            )
 
-            if task_type == 'multitask':
-                wandb_dict.update({
-                    "val_mae_avg": val_metrics.get('mae'),
-                    "val_rmse_avg": val_metrics.get('rmse'),
-                    "val_r2_avg": val_metrics.get('r2'),
-                })
-                if 'mae_per_target' in val_metrics:
-                    for i, mae_i in enumerate(val_metrics['mae_per_target']):
-                        wandb_dict[f"val_mae_target_{i}"] = mae_i
-                    for i, rmse_i in enumerate(val_metrics['rmse_per_target']):
-                        wandb_dict[f"val_rmse_target_{i}"] = rmse_i
-                    for i, r2_i in enumerate(val_metrics['r2_per_target']):
-                        wandb_dict[f"val_r2_target_{i}"] = r2_i
-            else:
-                wandb_dict.update({
-                    "val_mae": val_metrics.get('mae'),
-                    "val_rmse": val_metrics.get('rmse'),
-                    "val_r2": val_metrics.get('r2'),
-                })
-            
-            if is_main_process():
-                wandb.log(wandb_dict)
-
-        # Check early stopping condition
+        # Check if we should stop training
         if early_stopping and patience_counter >= patience:
             if is_main_process():
                 logger.info(f"Early stopping triggered! No improvement for {patience} epochs.")
                 logger.info(f"Best validation loss: {best_val_loss:.6f} at epoch {best_epoch}")
             stop_training = True
 
-    # Broadcast early stopping decision to all processes (for DDP)
-    if is_ddp and dist.is_initialized():
-        # Create tensors for broadcasting
-        stop_tensor = torch.tensor([1 if stop_training else 0], dtype=torch.uint8, device=device)
-        best_loss_tensor = torch.tensor([best_val_loss], dtype=torch.float, device=device)
-        patience_tensor = torch.tensor([patience_counter], dtype=torch.int, device=device)
-        best_epoch_tensor = torch.tensor([best_epoch], dtype=torch.int, device=device)
-        
-        # Broadcast from rank 0
-        dist.broadcast(stop_tensor, src=0)
-        dist.broadcast(best_loss_tensor, src=0)
-        dist.broadcast(patience_tensor, src=0)
-        dist.broadcast(best_epoch_tensor, src=0)
-        
-        # Update values on non-main processes
-        stop_training = stop_tensor.item() == 1
-        best_val_loss = best_loss_tensor.item()
-        patience_counter = patience_tensor.item()
-        best_epoch = best_epoch_tensor.item()
+    # Broadcast training state to all processes (for DDP)
+    stop_training, best_val_loss, patience_counter, best_epoch = _broadcast_training_state(
+        stop_training=stop_training,
+        best_val_loss=best_val_loss,
+        patience_counter=patience_counter,
+        best_epoch=best_epoch,
+        is_ddp=is_ddp,
+        device=device
+    )
 
-    return (stop_training, best_val_loss, patience_counter, 
+    return (stop_training, best_val_loss, patience_counter,
             best_model_state, best_metrics, best_epoch)
 
 
