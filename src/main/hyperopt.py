@@ -11,7 +11,11 @@ import yaml
 import random
 import copy
 import math
-from typing import Dict, Any, Optional
+from typing import Any
+
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 try:
     import wandb
@@ -25,71 +29,71 @@ class HyperparameterError(Exception):
     pass
 
 
-def run_hyperparameter_optimization(args) -> Dict[str, Any]:
+def run_hyperparameter_optimization(args) -> dict[str, Any]:
     """
     Run hyperparameter optimization using the legacy YAML-based system.
-    
+
     Args:
         args: Command line arguments
-        
+
     Returns:
         Dictionary containing optimization results
-        
+
     Raises:
         HyperparameterError: If hyperparameter optimization fails
     """
-    print("="*80)
-    print("STARTING HYPERPARAMETER OPTIMIZATION")
-    print("="*80)
-    
+    logger.info("=" * 80)
+    logger.info("STARTING HYPERPARAMETER OPTIMIZATION")
+    logger.info("=" * 80)
+
     # Import here to avoid circular imports
     from main.runner import run_single_trial
-    
+
     # Load hyperparameter configuration
     if not args.hyperparameter_file or not os.path.exists(args.hyperparameter_file):
         raise HyperparameterError(f"Hyperparameter file not found: {args.hyperparameter_file}")
-    
+
     with open(args.hyperparameter_file, 'r') as f:
         hparam_config = yaml.safe_load(f)
-    
+
     results = {
         "trials": [],
         "best_trial": None,
         "best_metrics": None
     }
-    
+
     best_loss = float('inf')
     best_trial_data = None
-    
+
     for trial_idx in range(args.num_trials):
-        print(f"\n=== Trial {trial_idx + 1}/{args.num_trials} ===")
-        
+        logger.info(f"\n=== Trial {trial_idx + 1}/{args.num_trials} ===")
+
         # Sample hyperparameters
         trial_config = {}
         for param_name, param_config in hparam_config.items():
             trial_config[param_name] = _sample_hparam_value(param_config)
-        
-        print(f"Hyperparameters: {trial_config}")
-        
+
+        logger.info(f"Hyperparameters: {trial_config}")
+
         # Create trial arguments
         trial_args = copy.deepcopy(args)
         for param_name, param_value in trial_config.items():
             setattr(trial_args, param_name, param_value)
-        
+
         # Mark this as a hyperopt trial to prevent individual model saving
         trial_args._is_hyperopt_trial = True
-        
+
         # Run trial
         try:
             trial_results = run_single_trial(trial_args)
-            
+
             trial_info = {
                 "trial_id": trial_idx,
                 "config": trial_config,
                 "metrics": {k: v for k, v in trial_results.items() if not k.startswith('_')},
                 "status": "completed"
             }
-            
+
             # Check if this is the best trial
             val_loss = trial_results.get("val_loss", float('inf'))
             if val_loss < best_loss:
@@ -102,41 +106,41 @@ def run_hyperparameter_optimization(args) -> Dict[str, Any]:
                     "results": trial_results,
                     "trial_id": trial_idx
                 }
-                print(f"🏆 New best trial! Loss: {val_loss:.6f}")
-            
+                logger.info(f"New best trial! Loss: {val_loss:.6f}")
+
         except Exception as e:
-            print(f"Trial {trial_idx + 1} failed: {e}")
+            logger.error(f"Trial {trial_idx + 1} failed: {e}")
             trial_info = {
                 "trial_id": trial_idx,
                 "config": trial_config,
                 "metrics": {"error": str(e)},
                 "status": "failed"
             }
-        
+
         results["trials"].append(trial_info)
-    
+
     # Save the best model ONCE at the end
     if best_trial_data is not None:
-        print(f"\n🎯 Saving best model from trial {results['best_trial']['trial_id'] + 1}...")
+        logger.info(f"\nSaving best model from trial {results['best_trial']['trial_id'] + 1}...")
         _save_best_hyperopt_model(best_trial_data, args)
-        
+
         # Verify the saved model
         _verify_saved_model(args, results["best_trial"])
-    
+
     # Print summary
     _print_hyperopt_summary(results, args)
-    
+
     # Save results
     _save_optimization_results(results, args)
-    
+
     # Log to wandb if enabled
     if args.enable_wandb and WANDB_AVAILABLE:
         _log_optimization_to_wandb(results, args)
-    
+
     return results
 
 
-def _sample_hparam_value(param_config):
+def _sample_hparam_value(param_config) -> Any:
     """Sample a hyperparameter value from configuration."""
     if isinstance(param_config, list):
         # Grid search: return a random element from the list
@@ -164,16 +168,16 @@ def _sample_hparam_value(param_config):
         return param_config
 
 
-def _save_best_hyperopt_model(best_trial_data, args):
+def _save_best_hyperopt_model(best_trial_data: dict[str, Any], args) -> None:
     """Save the best model from hyperparameter optimization."""
     trial_results = best_trial_data["results"]
     trial_args = best_trial_data["args"]
-    
+
     # Extract model components
     model = trial_results["_model_state"]
     preprocessing_pipeline = trial_results["_preprocessing_pipeline"]
     test_metrics = trial_results["_test_metrics"]
-    
+
     # Get model state dict
     if hasattr(model, 'module'):  # DDP model
         model_state_dict = {k: v.cpu() for k, v in model.module.state_dict().items()}
@@ -181,7 +185,7 @@ def _save_best_hyperopt_model(best_trial_data, args):
     else:
         model_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
         model_for_config = model
-    
+
     # Create model artifact with hyperopt config
     model_artifact = {
         "hyperparams": {
@@ -205,11 +209,11 @@ def _save_best_hyperopt_model(best_trial_data, args):
             "loss_function": trial_args.loss_function,
             "evidential_lambda": getattr(trial_args, 'evidential_lambda', 1.0),
             "best_val_loss": test_metrics.get("loss", float('inf')),
-            
+
             # Hyperopt metadata
             "hyperopt_best_trial": True,
             "hyperopt_trial_id": best_trial_data.get("trial_id", -1),
-            
+
             # Preprocessing pipeline information
             "preprocessing_config": {
                 "apply_sae": preprocessing_pipeline.config.apply_sae,
@@ -218,7 +222,7 @@ def _save_best_hyperopt_model(best_trial_data, args):
                 "task_type": preprocessing_pipeline.config.task_type,
                 "sae_percentile_cutoff": preprocessing_pipeline.config.sae_percentile_cutoff
             } if preprocessing_pipeline else None,
-            
+
             # Scaler parameters
             "scaler_means": preprocessing_pipeline.standard_scaler.means.tolist() if (
                 preprocessing_pipeline and preprocessing_pipeline.standard_scaler
@@ -226,7 +230,7 @@ def _save_best_hyperopt_model(best_trial_data, args):
             "scaler_stds": preprocessing_pipeline.standard_scaler.stds.tolist() if (
                 preprocessing_pipeline and preprocessing_pipeline.standard_scaler
             ) else None,
-            
+
             # SAE statistics
             "sae_statistics": preprocessing_pipeline.sae_normalizer.sae_statistics if (
                 preprocessing_pipeline and preprocessing_pipeline.sae_normalizer
@@ -234,112 +238,112 @@ def _save_best_hyperopt_model(best_trial_data, args):
         },
         "state_dict": model_state_dict
     }
-    
+
     # Ensure output directory exists
     model_dir = os.path.dirname(os.path.abspath(args.model_save_path))
     if model_dir:
         os.makedirs(model_dir, exist_ok=True)
-    
+
     # Save model
     import torch
     torch.save(model_artifact, args.model_save_path)
-    print(f"✅ Best model saved to: {args.model_save_path}")
+    logger.info(f"Best model saved to: {args.model_save_path}")
 
 
-def _verify_saved_model(args, best_trial_info):
+def _verify_saved_model(args, best_trial_info: dict[str, Any]) -> bool:
     """Verify that the saved model contains the expected configuration."""
     try:
         import torch
-        
+
         # Load the saved model
         model_artifact = torch.load(args.model_save_path, map_location='cpu')
-        
+
         # Verify it contains expected fields
         assert "hyperparams" in model_artifact, "Model missing hyperparameters"
         assert "state_dict" in model_artifact, "Model missing state dict"
-        
+
         # Verify best trial metadata
         hyperparams = model_artifact["hyperparams"]
         assert hyperparams.get("hyperopt_best_trial") == True, "Model not marked as best trial"
-        
+
         # Verify key hyperparameters match
-        saved_config = {k: v for k, v in hyperparams.items() 
+        saved_config = {k: v for k, v in hyperparams.items()
                        if k in best_trial_info["config"]}
-        
-        print(f"✅ Model verification passed")
-        print(f"   - Contains {len(model_artifact['state_dict'])} parameter tensors")
-        print(f"   - Best trial loss: {hyperparams.get('best_val_loss', 'N/A')}")
-        print(f"   - Key config: hidden_dim={hyperparams.get('hidden_dim')}, "
+
+        logger.info("Model verification passed")
+        logger.info(f"   - Contains {len(model_artifact['state_dict'])} parameter tensors")
+        logger.info(f"   - Best trial loss: {hyperparams.get('best_val_loss', 'N/A')}")
+        logger.info(f"   - Key config: hidden_dim={hyperparams.get('hidden_dim')}, "
               f"lr={hyperparams.get('learning_rate'):.2e}")
-        
+
         return True
-        
+
     except Exception as e:
-        print(f"⚠️  Model verification failed: {e}")
+        logger.warning(f"Model verification failed: {e}")
         return False
 
 
-def _print_hyperopt_summary(results, args):
+def _print_hyperopt_summary(results: dict[str, Any], args) -> None:
     """Print hyperparameter optimization summary."""
-    print("\n" + "="*80)
-    print("HYPERPARAMETER OPTIMIZATION SUMMARY")
-    print("="*80)
-    
+    logger.info("\n" + "=" * 80)
+    logger.info("HYPERPARAMETER OPTIMIZATION SUMMARY")
+    logger.info("=" * 80)
+
     completed_trials = [t for t in results["trials"] if t["status"] == "completed"]
     failed_trials = [t for t in results["trials"] if t["status"] == "failed"]
-    
-    print(f"Total trials: {len(results['trials'])}")
-    print(f"Completed trials: {len(completed_trials)}")
-    print(f"Failed trials: {len(failed_trials)}")
-    
+
+    logger.info(f"Total trials: {len(results['trials'])}")
+    logger.info(f"Completed trials: {len(completed_trials)}")
+    logger.info(f"Failed trials: {len(failed_trials)}")
+
     if results["best_trial"]:
         best = results["best_trial"]
-        print(f"\n🏆 Best trial: {best['trial_id'] + 1}")
-        print(f"🎯 Best validation loss: {best['metrics'].get('val_loss', 'N/A'):.6f}")
-        print(f"📊 Best metrics:")
+        logger.info(f"\nBest trial: {best['trial_id'] + 1}")
+        logger.info(f"Best validation loss: {best['metrics'].get('val_loss', 'N/A'):.6f}")
+        logger.info("Best metrics:")
         metrics = best['metrics']
-        print(f"   - MAE: {metrics.get('val_mae', 'N/A'):.6f}")
-        print(f"   - RMSE: {metrics.get('val_rmse', 'N/A'):.6f}")
-        print(f"   - R²: {metrics.get('val_r2', 'N/A'):.6f}")
-        
-        print(f"\n⚙️  Best hyperparameters:")
+        logger.info(f"   - MAE: {metrics.get('val_mae', 'N/A'):.6f}")
+        logger.info(f"   - RMSE: {metrics.get('val_rmse', 'N/A'):.6f}")
+        logger.info(f"   - R2: {metrics.get('val_r2', 'N/A'):.6f}")
+
+        logger.info("\nBest hyperparameters:")
         for k, v in best["config"].items():
             if isinstance(v, float):
-                print(f"   - {k}: {v:.6f}")
+                logger.info(f"   - {k}: {v:.6f}")
             else:
-                print(f"   - {k}: {v}")
-                
-        print(f"\n💾 Model saved to: {args.model_save_path}")
+                logger.info(f"   - {k}: {v}")
+
+        logger.info(f"\nModel saved to: {args.model_save_path}")
     else:
-        print("\n❌ No successful trials found.")
-    
-    print("="*80)
+        logger.warning("No successful trials found.")
+
+    logger.info("=" * 80)
 
 
-def _save_optimization_results(results: Dict[str, Any], args) -> None:
+def _save_optimization_results(results: dict[str, Any], args) -> None:
     """Save optimization results to file."""
     # Create results directory if it doesn't exist
     results_dir = "hyperopt_results"
     os.makedirs(results_dir, exist_ok=True)
-    
+
     # Generate filename
     import datetime
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     results_file = os.path.join(results_dir, f"hyperopt_results_{timestamp}.json")
-    
+
     # Save results
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2, default=str)
-    
-    print(f"Results saved to: {results_file}")
+
+    logger.info(f"Results saved to: {results_file}")
 
 
-def _log_optimization_to_wandb(results: Dict[str, Any], args) -> None:
+def _log_optimization_to_wandb(results: dict[str, Any], args) -> None:
     """Log optimization results to Weights & Biases."""
     if not WANDB_AVAILABLE:
-        print("Weights & Biases not available, skipping logging")
+        logger.warning("Weights & Biases not available, skipping logging")
         return
-    
+
     try:
         # Initialize a new run for the optimization summary
         wandb_config = {
@@ -347,12 +351,12 @@ def _log_optimization_to_wandb(results: Dict[str, Any], args) -> None:
             "num_trials": args.num_trials,
             "hyperparameter_file": args.hyperparameter_file,
         }
-        
+
         # Add tags if specified
         tags = ["hyperopt", "legacy"]
         if args.wandb_tags_list:
             tags.extend(args.wandb_tags_list)
-        
+
         run = wandb.init(
             project=args.wandb_project,
             entity=args.wandb_entity,
@@ -360,17 +364,17 @@ def _log_optimization_to_wandb(results: Dict[str, Any], args) -> None:
             config=wandb_config,
             tags=tags
         )
-        
+
         # Log optimization statistics
         completed_trials = [t for t in results["trials"] if t["status"] == "completed"]
         failed_trials = [t for t in results["trials"] if t["status"] == "failed"]
-        
+
         wandb.log({
             "optimization/num_trials": len(results["trials"]),
             "optimization/num_successful": len(completed_trials),
             "optimization/num_failed": len(failed_trials),
         })
-        
+
         # Log best results if available
         if results["best_trial"]:
             best_metrics = results["best_trial"]["metrics"]
@@ -380,11 +384,11 @@ def _log_optimization_to_wandb(results: Dict[str, Any], args) -> None:
                 "optimization/best_rmse": best_metrics.get("val_rmse", float('inf')),
                 "optimization/best_r2": best_metrics.get("val_r2", -float('inf')),
             })
-            
+
             # Log best hyperparameters
             best_config = results["best_trial"]["config"]
             wandb.log({f"best_config/{k}": v for k, v in best_config.items()})
-        
+
         # Create summary table of all trials
         trial_data = []
         for trial in results["trials"]:
@@ -396,21 +400,21 @@ def _log_optimization_to_wandb(results: Dict[str, Any], args) -> None:
                     **{f"config_{k}": v for k, v in trial["config"].items()}
                 }
                 trial_data.append(row)
-        
+
         # Log trial table
         if trial_data:
             wandb.log({"optimization/trials_table": wandb.Table(data=trial_data)})
-        
+
         wandb.finish()
-        
+
     except Exception as e:
-        print(f"Failed to log to Weights & Biases: {e}")
+        logger.error(f"Failed to log to Weights & Biases: {e}")
 
 
-def create_example_hyperparameter_config() -> Dict[str, Any]:
+def create_example_hyperparameter_config() -> dict[str, Any]:
     """
     Create an example hyperparameter configuration file.
-    
+
     Returns:
         Dictionary with example hyperparameter configurations
     """
@@ -426,14 +430,14 @@ def create_example_hyperparameter_config() -> Dict[str, Any]:
             "max": 5
         },
         "num_message_passing_layers": {
-            "type": "int", 
+            "type": "int",
             "min": 2,
             "max": 5
         },
         "embedding_dim": [32, 64, 128],  # Grid search
         "ffn_num_layers": [2, 3, 4],
         "attention_num_heads": [2, 4, 8],
-        
+
         # Training parameters
         "learning_rate": {
             "type": "float",
@@ -455,7 +459,7 @@ def create_example_hyperparameter_config() -> Dict[str, Any]:
             "min": 0.0,
             "max": 0.3
         },
-        
+
         # Optimization parameters
         "lr_scheduler": ["ReduceLROnPlateau", "CosineAnnealingLR", "StepLR"],
         "lr_reduce_factor": {
@@ -468,7 +472,7 @@ def create_example_hyperparameter_config() -> Dict[str, Any]:
             "min": 5,
             "max": 20
         },
-        
+
         # Architecture choices
         "pooling_type": ["attention", "mean", "max", "sum"],
         "activation_type": ["relu", "leakyrelu", "elu", "silu", "gelu"],
@@ -478,28 +482,28 @@ def create_example_hyperparameter_config() -> Dict[str, Any]:
 def save_example_config(output_path: str = "example_hyperparameters.yaml") -> None:
     """
     Save an example hyperparameter configuration to a YAML file.
-    
+
     Args:
         output_path: Path to save the example configuration
     """
     config = create_example_hyperparameter_config()
-    
+
     with open(output_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=True)
-    
-    print(f"Example hyperparameter configuration saved to: {output_path}")
-    print("\nTo use this configuration:")
-    print(f"  python main.py --hyperparameter_file {output_path} --num_trials 10")
+
+    logger.info(f"Example hyperparameter configuration saved to: {output_path}")
+    logger.info("To use this configuration:")
+    logger.info(f"  python main.py --hyperparameter_file {output_path} --num_trials 10")
 
 
 # Legacy compatibility function
-def run_legacy_hyperparameter_optimization(args) -> Dict[str, Any]:
+def run_legacy_hyperparameter_optimization(args) -> dict[str, Any]:
     """
     Legacy compatibility function that just calls the main optimization function.
-    
+
     Args:
         args: Command line arguments
-        
+
     Returns:
         Dictionary containing optimization results
     """
