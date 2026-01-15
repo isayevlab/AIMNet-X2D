@@ -3,11 +3,15 @@
 Data loader creation and collate functions for molecular datasets.
 """
 
-from torch.utils.data import DataLoader
+from typing import Any, List, Optional
+
+from torch.utils.data import DataLoader, Sampler
+from torch_geometric.data import Data
+
 from .molecular import PyGSMILESDataset, HDF5MolecularIterableDataset, MolecularBatch
 
 
-def iterable_collate_fn(batch_list):
+def iterable_collate_fn(batch_list: List[Optional[Data]]) -> Optional[MolecularBatch]:
     """Collate function for iterable datasets, filtering out None values."""
     filtered = [b for b in batch_list if b is not None]
     if len(filtered) == 0:
@@ -20,8 +24,8 @@ def create_pyg_dataloader(
     batch_size: int,
     shuffle: bool,
     num_workers: int,
-    sampler=None
-):
+    sampler: Optional[Sampler] = None
+) -> DataLoader:
     """
     Creates a PyTorch DataLoader for an InMemoryDataset.
     
@@ -45,7 +49,7 @@ def create_pyg_dataloader(
     )
 
 def create_iterable_pyg_dataloader(
-    hdf5_path: str, 
+    hdf5_path: str,
     batch_size: int,
     shuffle: bool,
     num_workers: int,
@@ -53,8 +57,8 @@ def create_iterable_pyg_dataloader(
     ddp_enabled: bool = False,
     rank: int = 0,
     world_size: int = 1,
-    preprocessing_pipeline = None
-):
+    preprocessing_pipeline: Optional[Any] = None
+) -> DataLoader:
     """
     Creates a DataLoader for an HDF5MolecularIterableDataset.
     
