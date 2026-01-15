@@ -6,5 +6,6 @@ optimized for batch processing on GPU.
 """
 
 from .batch import MolecularGraphBatch
+from .preprocessing import SAETransform
 
-__all__ = ["MolecularGraphBatch"]
+__all__ = ["MolecularGraphBatch", "SAETransform"]
