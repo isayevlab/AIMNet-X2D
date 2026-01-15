@@ -54,3 +54,70 @@ class TestMolecularGraphBatch:
         mol0 = batch.get_molecule(0)
         assert mol0["atom_types"].tolist() == [6, 6, 8]
         assert mol0["target"].item() == 1.0
+
+
+class TestMolecularGraphBatchFeatures:
+    """Test batch with full molecular features."""
+
+    def test_full_features_creation(self):
+        """Test batch with all atom features."""
+        batch = MolecularGraphBatch(
+            atom_types=torch.tensor([6, 6, 8], dtype=torch.int32),
+            degrees=torch.tensor([2, 3, 1], dtype=torch.int32),
+            hybridizations=torch.tensor([2, 2, 3], dtype=torch.int32),
+            hydrogen_counts=torch.tensor([2, 1, 0], dtype=torch.int32),
+            batch_idx=torch.tensor([0, 0, 0], dtype=torch.int64),
+            ptr=torch.tensor([0, 3], dtype=torch.int64),
+            num_molecules=1,
+        )
+        assert batch.degrees is not None
+        assert batch.hybridizations is not None
+        assert batch.hydrogen_counts is not None
+
+    def test_edge_indices_multi_hop(self):
+        """Test multi-hop edge indices."""
+        hop1 = torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]], dtype=torch.int64)
+        hop2 = torch.tensor([[0, 2], [2, 0]], dtype=torch.int64)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.tensor([6, 6, 6], dtype=torch.int32),
+            batch_idx=torch.tensor([0, 0, 0], dtype=torch.int64),
+            ptr=torch.tensor([0, 3], dtype=torch.int64),
+            edge_indices=[hop1, hop2],
+            num_molecules=1,
+        )
+        assert len(batch.edge_indices) == 2
+        assert batch.edge_indices[0].shape == (2, 4)
+        assert batch.edge_indices[1].shape == (2, 2)
+
+    def test_stereochemistry_indices(self):
+        """Test chiral and cis/trans indices."""
+        batch = MolecularGraphBatch(
+            atom_types=torch.tensor([6, 6, 6, 6, 6], dtype=torch.int32),
+            batch_idx=torch.tensor([0, 0, 0, 0, 0], dtype=torch.int64),
+            ptr=torch.tensor([0, 5], dtype=torch.int64),
+            chiral_indices=torch.tensor([[0, 1, 2, 3]], dtype=torch.int64),
+            cis_bond_indices=torch.tensor([[1, 2, 3, 4]], dtype=torch.int64),
+            trans_bond_indices=torch.tensor([], dtype=torch.int64).reshape(0, 4),
+            num_molecules=1,
+        )
+        assert batch.chiral_indices.shape == (1, 4)
+        assert batch.cis_bond_indices.shape == (1, 4)
+        assert batch.trans_bond_indices.shape == (0, 4)
+
+    def test_atom_features_dict(self):
+        """Test getting atom features as dict for model input."""
+        batch = MolecularGraphBatch(
+            atom_types=torch.tensor([6, 6, 8], dtype=torch.int32),
+            degrees=torch.tensor([2, 3, 1], dtype=torch.int32),
+            hybridizations=torch.tensor([2, 2, 3], dtype=torch.int32),
+            hydrogen_counts=torch.tensor([2, 1, 0], dtype=torch.int32),
+            batch_idx=torch.tensor([0, 0, 0], dtype=torch.int64),
+            ptr=torch.tensor([0, 3], dtype=torch.int64),
+            num_molecules=1,
+        )
+        features = batch.atom_features_dict()
+        assert "atom_type" in features
+        assert "degree" in features
+        assert "hybridization" in features
+        assert "hydrogen_count" in features

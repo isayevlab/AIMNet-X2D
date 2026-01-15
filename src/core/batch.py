@@ -188,6 +188,27 @@ class MolecularGraphBatch:
 
         return result
 
+    def atom_features_dict(self) -> dict[str, torch.Tensor]:
+        """
+        Get atom features as dictionary for model embedding layers.
+
+        Returns dict with keys matching embedding layer names:
+        - 'atom_type': [total_atoms] long tensor
+        - 'degree': [total_atoms] long tensor (if degrees populated)
+        - 'hybridization': [total_atoms] long tensor (if hybridizations populated)
+        - 'hydrogen_count': [total_atoms] long tensor (if hydrogen_counts populated)
+        """
+        features = {"atom_type": self.atom_types.long()}
+
+        if self.degrees is not None:
+            features["degree"] = self.degrees.long()
+        if self.hybridizations is not None:
+            features["hybridization"] = self.hybridizations.long()
+        if self.hydrogen_counts is not None:
+            features["hydrogen_count"] = self.hydrogen_counts.long()
+
+        return features
+
     def pin_memory(self) -> MolecularGraphBatch:
         """
         Pin tensors in memory for faster GPU transfer.
