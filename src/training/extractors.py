@@ -9,20 +9,23 @@ import numpy as np
 import h5py
 import tqdm
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @torch.no_grad()
-def extract_partial_charges(model, data_loader, device):
+def extract_partial_charges(model, data_loader, device) -> list[tuple[str, list[float]]]:
     """
-    Iterates over the data_loader, does a forward pass, 
+    Iterates over the data_loader, does a forward pass,
     and collects partial charges if available.
-    
+
     Args:
         model: Model to extract partial charges from
         data_loader: DataLoader with input data
         device: Device to run inference on
-        
+
     Returns:
         List of tuples (smiles, [q1, q2, ...]) for each molecule
     """
@@ -70,12 +73,20 @@ def extract_partial_charges(model, data_loader, device):
     return results
 
 
-def extract_all_embeddings(model, train_loader, val_loader, test_loader, device, output_path, 
-                          embedding_type='pooled', include_atom_embeddings=False):
+def extract_all_embeddings(
+    model,
+    train_loader,
+    val_loader,
+    test_loader,
+    device,
+    output_path: str,
+    embedding_type: str = 'pooled',
+    include_atom_embeddings: bool = False
+) -> dict:
     """
     Extract molecular embeddings from all data loaders (train, validation, test)
     and save them to a structured HDF5 file.
-    
+
     Args:
         model: The trained GNN model
         train_loader: DataLoader for training data
@@ -117,7 +128,7 @@ def extract_all_embeddings(model, train_loader, val_loader, test_loader, device,
     
     # Process each dataset
     for dataset_name, loader in [('train', train_loader), ('val', val_loader), ('test', test_loader)]:
-        print(f"Extracting embeddings from {dataset_name} set...")
+        logger.info(f"Extracting embeddings from {dataset_name} set...")
         
         # Process each batch
         for batch_idx, batch in enumerate(tqdm.tqdm(loader, desc=f"Processing {dataset_name}")):
@@ -200,7 +211,7 @@ def extract_all_embeddings(model, train_loader, val_loader, test_loader, device,
     test_count = len(results.get('test_smiles', []))
     total_count = train_count + val_count + test_count
     
-    print(f"Extracted embeddings for {total_count} molecules: {train_count} train, {val_count} validation, {test_count} test")
+    logger.info(f"Extracted embeddings for {total_count} molecules: {train_count} train, {val_count} validation, {test_count} test")
     
     # Save the embeddings to HDF5
     save_embeddings_to_hdf5(results, output_path, include_atom_embeddings)
@@ -208,10 +219,10 @@ def extract_all_embeddings(model, train_loader, val_loader, test_loader, device,
     return results
 
 
-def save_embeddings_to_hdf5(results: Dict, output_path: str, include_atom_embeddings: bool = False):
+def save_embeddings_to_hdf5(results: dict, output_path: str, include_atom_embeddings: bool = False) -> None:
     """
     Save extracted embeddings to an HDF5 file with a structured format.
-    
+
     Args:
         results: Dictionary containing embeddings and metadata
         output_path: Path to save the HDF5 file
@@ -272,31 +283,31 @@ def save_embeddings_to_hdf5(results: Dict, output_path: str, include_atom_embedd
                         for i, smi in enumerate(smiles):
                             atom_counts[i] = counts_dict.get(smi, 0)
     
-    print(f"Successfully saved embeddings to: {output_path}")
+    logger.info(f"Successfully saved embeddings to: {output_path}")
 
 
-def extract_embeddings_main(args, model, train_loader, val_loader, test_loader, device):
+def extract_embeddings_main(args, model, train_loader, val_loader, test_loader, device) -> None:
     """
     Extract molecular embeddings from the trained model for all datasets.
-    
+
     This function:
     1. Runs molecules through the trained GNN model
     2. Extracts embeddings from the pooling layer (molecule-level representations)
-    3. Optionally extracts atom-level embeddings 
+    3. Optionally extracts atom-level embeddings
     4. Saves everything to an HDF5 file for downstream analysis
-    
+
     Args:
         args: Command line arguments
         model: The trained GNN model
-        train_loader: DataLoader for training data 
+        train_loader: DataLoader for training data
         val_loader: DataLoader for validation data
         test_loader: DataLoader for test data
         device: Device to run extraction on
     """
-    print(f"\n{'='*80}")
-    print(f"EXTRACTING MOLECULAR EMBEDDINGS")
-    print(f"{'='*80}")
-    print(f"• Output file: {args.embeddings_output_path}")
+    logger.info("=" * 80)
+    logger.info("EXTRACTING MOLECULAR EMBEDDINGS")
+    logger.info("=" * 80)
+    logger.info(f"Output file: {args.embeddings_output_path}")
     
     # Ensure model is in eval mode
     model.eval()
@@ -328,7 +339,7 @@ def extract_embeddings_main(args, model, train_loader, val_loader, test_loader, 
     
     # Function to process a dataset
     def process_dataset(name, loader):
-        print(f"Processing {name} dataset...")
+        logger.info(f"Processing {name} dataset...")
         
         # Clear collections for this dataset
         mol_embeddings.clear()
@@ -400,15 +411,15 @@ def extract_embeddings_main(args, model, train_loader, val_loader, test_loader, 
     # Process each dataset
     if train_loader:
         dataset_embeddings['train'] = process_dataset('train', train_loader)
-        print(f"• Extracted embeddings for {dataset_embeddings['train']['count']:,} training molecules")
-    
+        logger.info(f"Extracted embeddings for {dataset_embeddings['train']['count']:,} training molecules")
+
     if val_loader:
         dataset_embeddings['validation'] = process_dataset('validation', val_loader)
-        print(f"• Extracted embeddings for {dataset_embeddings['validation']['count']:,} validation molecules")
-    
+        logger.info(f"Extracted embeddings for {dataset_embeddings['validation']['count']:,} validation molecules")
+
     if test_loader:
         dataset_embeddings['test'] = process_dataset('test', test_loader)
-        print(f"• Extracted embeddings for {dataset_embeddings['test']['count']:,} test molecules")
+        logger.info(f"Extracted embeddings for {dataset_embeddings['test']['count']:,} test molecules")
     
     # Remove hooks
     mol_hook.remove()
@@ -461,5 +472,5 @@ def extract_embeddings_main(args, model, train_loader, val_loader, test_loader, 
                         atom_counts[i] = count
     
     total_count = sum(data['count'] for data in dataset_embeddings.values())
-    print(f"\nSuccessfully saved embeddings for {total_count:,} molecules to: {args.embeddings_output_path}")
-    print(f"{'='*80}\n")
+    logger.info(f"Successfully saved embeddings for {total_count:,} molecules to: {args.embeddings_output_path}")
+    logger.info("=" * 80)
