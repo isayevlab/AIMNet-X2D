@@ -9,7 +9,8 @@ import os
 import copy
 import tempfile
 import shutil
-from typing import Dict, Any, Optional
+import argparse
+from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
 
 import torch
@@ -21,7 +22,7 @@ from utils import set_seed
 # Import trial utilities from separate module to avoid circular imports
 from trial_utils import setup_trial_environment, cleanup_trial_environment, cleanup_temporary_files, validate_trial_arguments
 
-def setup_distributed_environment(args) -> tuple:
+def setup_distributed_environment(args: argparse.Namespace) -> Tuple[torch.device, bool, int, int]:
     """
     Setup distributed training environment.
     
@@ -75,7 +76,7 @@ def setup_distributed_environment(args) -> tuple:
     
     return device, is_ddp, local_rank, world_size
 
-def setup_model_paths(args) -> None:
+def setup_model_paths(args: argparse.Namespace) -> None:
     """
     Setup and validate model-related paths.
     
@@ -99,7 +100,7 @@ def setup_model_paths(args) -> None:
             os.makedirs(inference_dir, exist_ok=True)
 
 
-def check_data_consistency(args) -> None:
+def check_data_consistency(args: argparse.Namespace) -> None:
     """
     Check consistency of data-related arguments.
     
@@ -151,7 +152,7 @@ def check_data_consistency(args) -> None:
                 )
 
 
-def get_experiment_id(args) -> str:
+def get_experiment_id(args: argparse.Namespace) -> str:
     """
     Generate a unique experiment ID based on configuration.
     
@@ -178,7 +179,7 @@ def get_experiment_id(args) -> str:
     return f"aimnet_{config_hash}_{timestamp}"
 
 
-def log_system_info():
+def log_system_info() -> None:
     """Log system information for debugging and reproducibility."""
     print("="*60)
     print("SYSTEM INFORMATION")
@@ -211,7 +212,7 @@ def log_system_info():
     print("="*60)
 
 
-def create_experiment_summary(args, results: Dict[str, Any]) -> Dict[str, Any]:
+def create_experiment_summary(args: argparse.Namespace, results: Dict[str, Any]) -> Dict[str, Any]:
     """
     Create a comprehensive experiment summary.
     
@@ -292,7 +293,7 @@ def save_experiment_summary(summary: Dict[str, Any], output_path: str) -> None:
     print(f"Experiment summary saved to: {output_path}")
 
 
-def handle_inference_mode(args) -> bool:
+def handle_inference_mode(args: argparse.Namespace) -> bool:
     """
     Check if we're in inference mode and handle appropriately.
     
@@ -325,7 +326,7 @@ def handle_inference_mode(args) -> bool:
     return False
 
 
-def check_hyperparameter_optimization_mode(args) -> str:
+def check_hyperparameter_optimization_mode(args: argparse.Namespace) -> str:
     """
     Determine which hyperparameter optimization mode to use.
     
@@ -341,7 +342,7 @@ def check_hyperparameter_optimization_mode(args) -> str:
         return 'none'
 
 
-def prepare_wandb_config(args) -> Dict[str, Any]:
+def prepare_wandb_config(args: argparse.Namespace) -> Dict[str, Any]:
     """Prepare configuration dictionary for Weights & Biases logging."""
     wandb_config = {
         # Model architecture
@@ -381,7 +382,7 @@ def prepare_wandb_config(args) -> Dict[str, Any]:
     
     return wandb_config
 
-def setup_experiment_logging(args) -> Optional[Any]:
+def setup_experiment_logging(args: argparse.Namespace) -> Optional[Any]:
     """Setup experiment logging with Weights & Biases."""
     if not args.enable_wandb:
         return None
@@ -466,7 +467,7 @@ def finalize_experiment_logging(wandb_run, results: Dict[str, Any]) -> None:
         print(f"WARNING: Failed to finalize Weights & Biases logging: {e}")
 
 
-def print_final_summary(results: Dict[str, Any], args) -> None:
+def print_final_summary(results: Dict[str, Any], args: argparse.Namespace) -> None:
     """
     Print a final summary of the experiment results.
     
