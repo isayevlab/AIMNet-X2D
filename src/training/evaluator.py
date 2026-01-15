@@ -22,6 +22,40 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _apply_inverse_preprocessing(
+    predictions: np.ndarray,
+    targets: np.ndarray,
+    smiles_list: list[str],
+    preprocessing_pipeline: Any | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Apply inverse preprocessing to predictions and targets.
+
+    Handles SAE denormalization and standard scaling inverse transform.
+    Returns predictions and targets on the original scale.
+    """
+    if preprocessing_pipeline is None:
+        return predictions, targets
+
+    # Ensure 2D shape for preprocessing pipeline
+    if predictions.ndim == 1:
+        predictions = predictions.reshape(-1, 1)
+    if targets.ndim == 1:
+        targets = targets.reshape(-1, 1)
+
+    # Apply inverse transform (handles both SAE and scaling)
+    predictions = preprocessing_pipeline.inverse_transform(
+        smiles_list=smiles_list,
+        transformed_targets=predictions
+    )
+    targets = preprocessing_pipeline.inverse_transform(
+        smiles_list=smiles_list,
+        transformed_targets=targets
+    )
+
+    return predictions, targets
+
+
 @torch.no_grad()
 def evaluate(
     model: nn.Module,
@@ -232,23 +266,10 @@ def _compute_multitask_metrics(
     Y_pred = np.concatenate(all_preds_list, axis=0)
     Y_true = np.concatenate(all_targets_list, axis=0)
 
-    # FIXED: Apply COMPLETE inverse preprocessing including SAE
-    if preprocessing_pipeline is not None:
-        # Ensure proper shape
-        if len(Y_pred.shape) == 1:
-            Y_pred = Y_pred.reshape(-1, 1)
-        if len(Y_true.shape) == 1:
-            Y_true = Y_true.reshape(-1, 1)
-        
-        # Apply inverse transform with SMILES for SAE
-        Y_pred = preprocessing_pipeline.inverse_transform(
-            smiles_list=all_smiles_list,
-            transformed_targets=Y_pred
-        )
-        Y_true = preprocessing_pipeline.inverse_transform(
-            smiles_list=all_smiles_list,
-            transformed_targets=Y_true
-        )
+    # Apply inverse preprocessing (SAE denormalization and scaling)
+    Y_pred, Y_true = _apply_inverse_preprocessing(
+        Y_pred, Y_true, all_smiles_list, preprocessing_pipeline
+    )
 
     mae_vals = []
     rmse_vals = []
@@ -310,36 +331,23 @@ def _compute_single_task_metrics(
             f"SOLUTION: Check logs for 'WARNING: Invalid SMILES' messages.\n"
             f"Recreate your HDF5 files or check your CSV for corrupted rows."
         )
-    
-    # Apply COMPLETE inverse preprocessing including SAE
-    if preprocessing_pipeline is not None:
-        # Ensure proper shape
-        if len(preds_np.shape) == 1:
-            preds_np = preds_np.reshape(-1, 1)
-        if len(targets_np.shape) == 1:
-            targets_np = targets_np.reshape(-1, 1)
-        
-        try:
-            # Apply inverse transform with SMILES for SAE
-            preds_np = preprocessing_pipeline.inverse_transform(
-                smiles_list=all_smiles_list,
-                transformed_targets=preds_np
-            )
-            targets_np = preprocessing_pipeline.inverse_transform(
-                smiles_list=all_smiles_list,
-                transformed_targets=targets_np
-            )
-        except Exception as e:
-            raise ValueError(
-                f"Preprocessing inverse transform failed!\n"
-                f"Error: {e}\n\n"
-                f"This usually means:\n"
-                f"1. Model preprocessing doesn't match data preprocessing\n"
-                f"2. SAE statistics are missing or corrupted\n"
-                f"3. SMILES in data don't match training SMILES\n\n"
-                f"SOLUTION: Ensure you're using the same model and data format."
-            )
-        
+
+    # Apply inverse preprocessing (SAE denormalization and scaling)
+    try:
+        preds_np, targets_np = _apply_inverse_preprocessing(
+            preds_np, targets_np, all_smiles_list, preprocessing_pipeline
+        )
+    except Exception as e:
+        raise ValueError(
+            f"Preprocessing inverse transform failed!\n"
+            f"Error: {e}\n\n"
+            f"This usually means:\n"
+            f"1. Model preprocessing doesn't match data preprocessing\n"
+            f"2. SAE statistics are missing or corrupted\n"
+            f"3. SMILES in data don't match training SMILES\n\n"
+            f"SOLUTION: Ensure you're using the same model and data format."
+        )
+
     rmse_value = math.sqrt(mean_squared_error(targets_np, preds_np))
     
     return {
@@ -379,16 +387,10 @@ def _combine_multitask_ddp_metrics(
     global_smiles = gather_strings_to_rank0(all_smiles_list, device)
 
     if rank == 0 and global_preds.shape[0] > 0:
-        # FIXED: Apply COMPLETE inverse preprocessing including SAE
-        if preprocessing_pipeline is not None:
-            global_preds = preprocessing_pipeline.inverse_transform(
-                smiles_list=global_smiles,
-                transformed_targets=global_preds
-            )
-            global_targs = preprocessing_pipeline.inverse_transform(
-                smiles_list=global_smiles,
-                transformed_targets=global_targs
-            )
+        # Apply inverse preprocessing (SAE denormalization and scaling)
+        global_preds, global_targs = _apply_inverse_preprocessing(
+            global_preds, global_targs, global_smiles, preprocessing_pipeline
+        )
 
         M = global_targs.shape[1]
         mae_vals = []
@@ -448,16 +450,10 @@ def _combine_single_task_ddp_metrics(
     global_smiles = gather_strings_to_rank0(all_smiles_list, device)
 
     if rank == 0 and global_preds.shape[0] > 0:
-        # FIXED: Apply COMPLETE inverse preprocessing including SAE
-        if preprocessing_pipeline is not None:
-            global_preds = preprocessing_pipeline.inverse_transform(
-                smiles_list=global_smiles,
-                transformed_targets=global_preds
-            )
-            global_targs = preprocessing_pipeline.inverse_transform(
-                smiles_list=global_smiles,
-                transformed_targets=global_targs
-            )
+        # Apply inverse preprocessing (SAE denormalization and scaling)
+        global_preds, global_targs = _apply_inverse_preprocessing(
+            global_preds, global_targs, global_smiles, preprocessing_pipeline
+        )
 
         mae_val = mean_absolute_error(global_targs, global_preds)
         rmse_val = math.sqrt(mean_squared_error(global_targs, global_preds))
