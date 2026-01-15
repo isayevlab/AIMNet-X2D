@@ -6,7 +6,7 @@ This module contains functions for evaluating trained models and computing metri
 
 import math
 import pickle
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -17,6 +17,9 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from torch.utils.data import DataLoader
 
 from utils.distributed import safe_get_rank, gather_ndarray_to_rank0, gather_strings_to_rank0
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @torch.no_grad()
@@ -28,9 +31,9 @@ def evaluate(
     task_type: str = 'regression',
     mixed_precision: bool = False,
     num_tasks: int = 1,
-    preprocessing_pipeline: Optional[Any] = None,
+    preprocessing_pipeline: Any | None = None,
     is_ddp: bool = False
-) -> Tuple[float, Dict[str, float], np.ndarray, np.ndarray, List[str]]:
+) -> dict[str, Any]:
     """
     Evaluate model on a given data loader.
     
@@ -50,7 +53,7 @@ def evaluate(
     for batch_idx, batch in enumerate(data_loader):
         if batch is None:
             skipped_batches.append(batch_idx)
-            print(f"WARNING: Batch {batch_idx} was None, skipping")
+            logger.warning(f"Batch {batch_idx} was None, skipping")
             continue
         
         # Collect SMILES from each batch
@@ -62,7 +65,7 @@ def evaluate(
         batch_atom_features = {k: v.to(device) for k, v in batch.atom_features_map.items()}
 
         if isinstance(batch.targets, list):
-            print(f"WARNING: Batch {batch_idx} has list targets, skipping")
+            logger.warning(f"Batch {batch_idx} has list targets, skipping")
             skipped_batches.append(batch_idx)
             continue
         else:
@@ -100,7 +103,7 @@ def evaluate(
                 trans_indices
             )
             if torch.isnan(outputs).any():
-                print(f"WARNING: NaN found in outputs for batch {batch_idx}!")
+                logger.warning(f"NaN found in outputs for batch {batch_idx}!")
             loss = criterion(outputs, targets)
 
         total_loss += loss.item() * batch_size
@@ -114,7 +117,7 @@ def evaluate(
     
     # FIXED: Report skipped batches
     if skipped_batches:
-        print(f"WARNING: Skipped {len(skipped_batches)} batches during evaluation: {skipped_batches[:10]}{'...' if len(skipped_batches) > 10 else ''}")
+        logger.warning(f"Skipped {len(skipped_batches)} batches during evaluation: {skipped_batches[:10]}{'...' if len(skipped_batches) > 10 else ''}")
 
     # Compute local average loss
     avg_loss = total_loss / (total_size if total_size > 0 else 1)
@@ -141,7 +144,7 @@ def evaluate(
 
     return metrics
 
-def _process_evidential_outputs_for_metrics(outputs: torch.Tensor, model) -> torch.Tensor:
+def _process_evidential_outputs_for_metrics(outputs: torch.Tensor, model: nn.Module) -> torch.Tensor:
     """
     Process evidential outputs for metrics calculation.
     
@@ -164,11 +167,21 @@ def _process_evidential_outputs_for_metrics(outputs: torch.Tensor, model) -> tor
     
     return outputs
 
-def _combine_ddp_metrics(metrics, total_loss, total_size, all_preds_list, all_targets_list,
-                        all_smiles_list, device, task_type, num_tasks, preprocessing_pipeline):
+def _combine_ddp_metrics(
+    metrics: dict[str, Any],
+    total_loss: float,
+    total_size: int,
+    all_preds_list: list[np.ndarray],
+    all_targets_list: list[np.ndarray],
+    all_smiles_list: list[str],
+    device: torch.device,
+    task_type: str,
+    num_tasks: int,
+    preprocessing_pipeline: Any | None
+) -> dict[str, Any]:
     """
     Combine evaluation metrics across DDP ranks.
-    
+
     FIXED: Now handles SMILES for proper SAE inverse transform.
     """
     # All-reduce the total_loss and total_size
@@ -201,11 +214,16 @@ def _combine_ddp_metrics(metrics, total_loss, total_size, all_preds_list, all_ta
     
     return final_metrics
 
-def _compute_multitask_metrics(all_preds_list, all_targets_list, all_smiles_list, 
-                               avg_loss, preprocessing_pipeline):
+def _compute_multitask_metrics(
+    all_preds_list: list[np.ndarray],
+    all_targets_list: list[np.ndarray],
+    all_smiles_list: list[str],
+    avg_loss: float,
+    preprocessing_pipeline: Any | None
+) -> dict[str, Any]:
     """
     Compute metrics for multitask evaluation.
-    
+
     FIXED: Now accepts and uses SMILES for proper inverse transform.
     """
     if len(all_preds_list) == 0:
@@ -260,11 +278,16 @@ def _compute_multitask_metrics(all_preds_list, all_targets_list, all_smiles_list
     }
 
 
-def _compute_single_task_metrics(all_preds_list, all_targets_list, all_smiles_list,
-                                 avg_loss, preprocessing_pipeline):
+def _compute_single_task_metrics(
+    all_preds_list: list[np.ndarray],
+    all_targets_list: list[np.ndarray],
+    all_smiles_list: list[str],
+    avg_loss: float,
+    preprocessing_pipeline: Any | None
+) -> dict[str, Any]:
     """
     Compute metrics for single-task evaluation.
-    
+
     FIXED: Validates that SMILES count matches predictions before inverse transform.
     """
     if len(all_preds_list) == 0:
@@ -326,12 +349,19 @@ def _compute_single_task_metrics(all_preds_list, all_targets_list, all_smiles_li
         'r2': r2_score(targets_np, preds_np)
     }
 
-def _combine_multitask_ddp_metrics(all_preds_list, all_targets_list, all_smiles_list,
-                                   global_avg_loss, num_tasks, preprocessing_pipeline, 
-                                   rank, device):
+def _combine_multitask_ddp_metrics(
+    all_preds_list: list[np.ndarray],
+    all_targets_list: list[np.ndarray],
+    all_smiles_list: list[str],
+    global_avg_loss: float,
+    num_tasks: int,
+    preprocessing_pipeline: Any | None,
+    rank: int,
+    device: torch.device
+) -> dict[str, Any]:
     """
     Combine multitask metrics across DDP ranks.
-    
+
     FIXED: Now handles SMILES gathering for SAE inverse transform.
     """
     # Flatten local preds
@@ -389,11 +419,18 @@ def _combine_multitask_ddp_metrics(all_preds_list, all_targets_list, all_smiles_
 
     return final_metrics
 
-def _combine_single_task_ddp_metrics(all_preds_list, all_targets_list, all_smiles_list,
-                                     global_avg_loss, preprocessing_pipeline, rank, device):
+def _combine_single_task_ddp_metrics(
+    all_preds_list: list[np.ndarray],
+    all_targets_list: list[np.ndarray],
+    all_smiles_list: list[str],
+    global_avg_loss: float,
+    preprocessing_pipeline: Any | None,
+    rank: int,
+    device: torch.device
+) -> dict[str, Any]:
     """
     Combine single-task metrics across DDP ranks.
-    
+
     FIXED: Now handles SMILES gathering for SAE inverse transform.
     """
     # single-task regression
@@ -438,7 +475,11 @@ def _combine_single_task_ddp_metrics(all_preds_list, all_targets_list, all_smile
 
     return final_metrics
 
-def _broadcast_metrics(final_metrics, rank, device):
+def _broadcast_metrics(
+    final_metrics: dict[str, Any],
+    rank: int,
+    device: torch.device
+) -> dict[str, Any]:
     """Broadcast final metrics from rank 0 to all other ranks."""
     final_metrics_pickled = None
     if rank == 0:
