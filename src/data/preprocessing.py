@@ -7,7 +7,6 @@ Handles SAE normalization and standard scaling with proper train/test isolation.
 
 import numpy as np
 import torch
-from typing import List, Dict, Optional, Tuple, Union
 import tqdm
 from dataclasses import dataclass
 
@@ -22,7 +21,7 @@ logger = get_logger(__name__)
 class PreprocessingConfig:
     """Configuration for preprocessing pipeline."""
     apply_sae: bool = False
-    sae_subtasks: Optional[List[int]] = None
+    sae_subtasks: list[int] | None = None
     apply_standard_scaling: bool = True
     task_type: str = "regression"  # "regression" or "multitask"
     sae_percentile_cutoff: float = 2.0
@@ -40,10 +39,10 @@ class SAENormalizer:
         self.sae_statistics = None
         self.is_fitted = False
     
-    def fit(self, 
-            train_smiles: List[str], 
-            train_targets: Union[List[float], List[List[float]]], 
-            subtasks: Optional[List[int]] = None) -> Dict:
+    def fit(self,
+            train_smiles: list[str],
+            train_targets: list[float] | list[list[float]],
+            subtasks: list[int] | None = None) -> dict:
         """
         Compute SAE statistics from TRAINING DATA ONLY.
         
@@ -69,7 +68,7 @@ class SAENormalizer:
         self.is_fitted = True
         return self.sae_statistics
     
-    def _fit_single_task(self, smiles_list: List[str], targets: List[float]) -> Dict:
+    def _fit_single_task(self, smiles_list: list[str], targets: list[float]) -> dict:
         """Fit SAE for single-task regression."""
         logger.info("SAE single-task regression mode")
         
@@ -97,10 +96,10 @@ class SAENormalizer:
         
         return {"regression": sae_dict}
     
-    def _fit_multitask(self, 
-                      smiles_list: List[str], 
-                      targets: List[List[float]], 
-                      subtasks: List[int]) -> Dict:
+    def _fit_multitask(self,
+                      smiles_list: list[str],
+                      targets: list[list[float]],
+                      subtasks: list[int]) -> dict:
         """Fit SAE for multitask regression."""
         logger.info(f"SAE multitask mode for subtasks: {subtasks}")
         
@@ -143,9 +142,9 @@ class SAENormalizer:
         
         return sae_statistics
     
-    def transform(self, 
-                  smiles_list: List[str], 
-                  targets: Union[List[float], List[List[float]]]) -> Union[List[float], List[List[float]]]:
+    def transform(self,
+                  smiles_list: list[str],
+                  targets: list[float] | list[list[float]]) -> list[float] | list[list[float]]:
         """
         Apply SAE normalization using pre-computed statistics.
         
@@ -166,7 +165,7 @@ class SAENormalizer:
         else:
             raise ValueError(f"Unknown task_type: {self.task_type}")
     
-    def _transform_single_task(self, smiles_list: List[str], targets: List[float]) -> List[float]:
+    def _transform_single_task(self, smiles_list: list[str], targets: list[float]) -> list[float]:
         """Apply SAE normalization for single-task."""
         sae_dict = self.sae_statistics["regression"]
         normalized_targets = []
@@ -182,9 +181,9 @@ class SAENormalizer:
         
         return normalized_targets
     
-    def _transform_multitask(self, 
-                           smiles_list: List[str], 
-                           targets: List[List[float]]) -> List[List[float]]:
+    def _transform_multitask(self,
+                           smiles_list: list[str],
+                           targets: list[list[float]]) -> list[list[float]]:
         """Apply SAE normalization for multitask."""
         target_array = np.array(targets, dtype=np.float64)
         
@@ -206,9 +205,9 @@ class SAENormalizer:
         
         return target_array.tolist()
     
-    def inverse_transform(self, 
-                         smiles_list: List[str], 
-                         predictions: Union[np.ndarray, List[float], List[List[float]]]) -> np.ndarray:
+    def inverse_transform(self,
+                         smiles_list: list[str],
+                         predictions: np.ndarray | list[float] | list[list[float]]) -> np.ndarray:
         """
         Apply inverse SAE transformation to predictions.
         
@@ -248,7 +247,7 @@ class SAENormalizer:
         else:
             raise ValueError(f"Unknown task_type: {self.task_type}")
     
-    def _inverse_transform_single_task(self, atomic_nums: List, pred_array: np.ndarray) -> np.ndarray:
+    def _inverse_transform_single_task(self, atomic_nums: list, pred_array: np.ndarray) -> np.ndarray:
         """Apply inverse SAE transformation for single-task."""
         sae_dict = self.sae_statistics["regression"]
         result = pred_array.copy()
@@ -260,7 +259,7 @@ class SAENormalizer:
         
         return result
     
-    def _inverse_transform_multitask(self, atomic_nums: List, pred_array: np.ndarray) -> np.ndarray:
+    def _inverse_transform_multitask(self, atomic_nums: list, pred_array: np.ndarray) -> np.ndarray:
         """Apply inverse SAE transformation for multitask."""
         result = pred_array.copy()
         
@@ -276,10 +275,10 @@ class SAENormalizer:
         
         return result
     
-    def fit_transform(self, 
-                     train_smiles: List[str], 
-                     train_targets: Union[List[float], List[List[float]]], 
-                     subtasks: Optional[List[int]] = None) -> Union[List[float], List[List[float]]]:
+    def fit_transform(self,
+                     train_smiles: list[str],
+                     train_targets: list[float] | list[list[float]],
+                     subtasks: list[int] | None = None) -> list[float] | list[list[float]]:
         """Fit SAE on training data and transform it."""
         self.fit(train_smiles, train_targets, subtasks)
         return self.transform(train_smiles, train_targets)
@@ -295,7 +294,7 @@ class StandardScaler:
         self.stds = None
         self.is_fitted = False
     
-    def fit(self, train_targets: Union[List[float], List[List[float]]]) -> None:
+    def fit(self, train_targets: list[float] | list[list[float]]) -> None:
         """
         Compute scaling statistics from TRAINING DATA ONLY.
         
@@ -321,7 +320,7 @@ class StandardScaler:
         logger.debug(f"Scaling means: {self.means}")
         logger.debug(f"Scaling stds: {self.stds}")
     
-    def transform(self, targets: Union[List[float], List[List[float]]]) -> np.ndarray:
+    def transform(self, targets: list[float] | list[list[float]]) -> np.ndarray:
         """Apply scaling using pre-computed statistics."""
         if not self.is_fitted:
             raise ValueError("Must call fit() before transform()")
@@ -339,7 +338,7 @@ class StandardScaler:
         
         return scaled_targets * self.stds + self.means
     
-    def fit_transform(self, train_targets: Union[List[float], List[List[float]]]) -> np.ndarray:
+    def fit_transform(self, train_targets: list[float] | list[list[float]]) -> np.ndarray:
         """Fit scaler on training data and transform it."""
         self.fit(train_targets)
         return self.transform(train_targets)
@@ -357,9 +356,9 @@ class PreprocessingPipeline:
         self.standard_scaler = None
         self.is_fitted = False
     
-    def fit(self, 
-            train_smiles: List[str], 
-            train_targets: Union[List[float], List[List[float]]]) -> None:
+    def fit(self,
+            train_smiles: list[str],
+            train_targets: list[float] | list[list[float]]) -> None:
         """
         Fit preprocessing pipeline on TRAINING DATA ONLY.
         
@@ -391,10 +390,10 @@ class PreprocessingPipeline:
         self.is_fitted = True
         logger.info("Pipeline fitting complete")
     
-    def transform(self, 
-                  smiles_list: List[str], 
-                  targets: Union[List[float], List[List[float]]], 
-                  return_numpy: bool = True) -> Union[List, np.ndarray]:
+    def transform(self,
+                  smiles_list: list[str],
+                  targets: list[float] | list[list[float]],
+                  return_numpy: bool = True) -> list | np.ndarray:
         """
         Apply preprocessing transformations using pre-computed statistics.
         
@@ -436,8 +435,8 @@ class PreprocessingPipeline:
         else:
             return current_targets
     
-    def inverse_transform(self, 
-                     smiles_list: List[str], 
+    def inverse_transform(self,
+                     smiles_list: list[str],
                      transformed_targets: np.ndarray) -> np.ndarray:
         """
         Apply inverse transformations to convert predictions back to original scale.
@@ -463,15 +462,15 @@ class PreprocessingPipeline:
         
         return current_predictions
     
-    def fit_transform(self, 
-                     train_smiles: List[str], 
-                     train_targets: Union[List[float], List[List[float]]], 
-                     return_numpy: bool = True) -> Union[List, np.ndarray]:
+    def fit_transform(self,
+                     train_smiles: list[str],
+                     train_targets: list[float] | list[list[float]],
+                     return_numpy: bool = True) -> list | np.ndarray:
         """Fit pipeline on training data and transform it."""
         self.fit(train_smiles, train_targets)
         return self.transform(train_smiles, train_targets, return_numpy)
     
-    def get_num_tasks(self, targets: Union[List[float], List[List[float]]]) -> int:
+    def get_num_tasks(self, targets: list[float] | list[list[float]]) -> int:
         """Get number of tasks from target structure."""
         if isinstance(targets[0], list):
             return len(targets[0])
@@ -481,14 +480,14 @@ class PreprocessingPipeline:
 
 # Convenience function for the main script
 def preprocess_molecular_data(
-    train_smiles: List[str],
-    train_targets: Union[List[float], List[List[float]]],
-    val_smiles: List[str],
-    val_targets: Union[List[float], List[List[float]]],
-    test_smiles: List[str],
-    test_targets: Union[List[float], List[List[float]]],
+    train_smiles: list[str],
+    train_targets: list[float] | list[list[float]],
+    val_smiles: list[str],
+    val_targets: list[float] | list[list[float]],
+    test_smiles: list[str],
+    test_targets: list[float] | list[list[float]],
     config: PreprocessingConfig
-) -> Tuple[Tuple[List, List], Tuple[List, List], Tuple[List, List], PreprocessingPipeline]:
+) -> tuple[tuple[list, list], tuple[list, list], tuple[list, list], PreprocessingPipeline]:
     """
     Complete preprocessing of molecular data with proper train/test isolation.
     

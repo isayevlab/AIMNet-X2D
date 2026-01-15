@@ -3,7 +3,6 @@ Activation function utilities.
 """
 
 import torch.nn as nn
-from typing import Union
 
 
 def get_activation_function(activation_type: str) -> nn.Module:

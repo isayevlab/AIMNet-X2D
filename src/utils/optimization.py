@@ -2,11 +2,16 @@
 Optimization utilities for training.
 """
 
+from typing import Any
+
 import torch.nn as nn
-from typing import List, Dict, Any
+
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
-def get_layer_wise_learning_rates(model: nn.Module, base_lr: float, decay_factor: float = 0.8) -> List[Dict[str, Any]]:
+def get_layer_wise_learning_rates(model: nn.Module, base_lr: float, decay_factor: float = 0.8) -> list[dict[str, Any]]:
     """
     Apply lower learning rates to earlier layers in the model.
     
@@ -51,14 +56,14 @@ def get_layer_wise_learning_rates(model: nn.Module, base_lr: float, decay_factor
         
         # Log the learning rate for this depth
         layer_names = [name for name, _ in layers[depth]]
-        print(f"Depth {depth} (layers: {len(layer_names)}): LR = {lr:.8f}")
+        logger.info(f"Depth {depth} (layers: {len(layer_names)}): LR = {lr:.8f}")
         if len(layer_names) <= 3:  # Show layer names if not too many
-            print(f"  Layers: {layer_names}")
+            logger.info(f"  Layers: {layer_names}")
         
     return parameter_groups
 
 
-def freeze_parameters(model: nn.Module, freeze_patterns: List[str]) -> None:
+def freeze_parameters(model: nn.Module, freeze_patterns: list[str]) -> None:
     """
     Freeze model parameters matching given patterns.
     
@@ -77,10 +82,10 @@ def freeze_parameters(model: nn.Module, freeze_patterns: List[str]) -> None:
                 frozen_count += 1
                 break
     
-    print(f"Frozen {frozen_count}/{total_count} parameters")
+    logger.info(f"Frozen {frozen_count}/{total_count} parameters")
 
 
-def unfreeze_parameters(model: nn.Module, unfreeze_patterns: List[str]) -> None:
+def unfreeze_parameters(model: nn.Module, unfreeze_patterns: list[str]) -> None:
     """
     Unfreeze model parameters matching given patterns.
     
@@ -99,10 +104,10 @@ def unfreeze_parameters(model: nn.Module, unfreeze_patterns: List[str]) -> None:
                 unfrozen_count += 1
                 break
     
-    print(f"Unfrozen {unfrozen_count}/{total_count} parameters")
+    logger.info(f"Unfrozen {unfrozen_count}/{total_count} parameters")
 
 
-def count_parameters(model: nn.Module) -> Dict[str, int]:
+def count_parameters(model: nn.Module) -> dict[str, int]:
     """
     Count total and trainable parameters in a model.
     
@@ -122,7 +127,7 @@ def count_parameters(model: nn.Module) -> Dict[str, int]:
     }
 
 
-def get_parameter_info(model: nn.Module) -> Dict[str, Any]:
+def get_parameter_info(model: nn.Module) -> dict[str, Any]:
     """
     Get detailed information about model parameters.
     

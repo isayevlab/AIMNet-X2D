@@ -12,7 +12,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional
 
 
 # Check debug mode from environment
@@ -28,8 +27,8 @@ DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 
 def setup_logging(
-    level: Optional[int] = None,
-    log_file: Optional[str] = None,
+    level: int | None = None,
+    log_file: str | None = None,
     rank: int = 0,
     world_size: int = 1,
     simple_format: bool = False
@@ -143,7 +142,7 @@ class RankFilter(logging.Filter):
     Useful for distributed training where only rank 0 should log.
     """
 
-    def __init__(self, rank: int = 0, allowed_ranks: Optional[list] = None):
+    def __init__(self, rank: int = 0, allowed_ranks: list[int] | None = None):
         super().__init__()
         self.rank = rank
         self.allowed_ranks = allowed_ranks or [0]
