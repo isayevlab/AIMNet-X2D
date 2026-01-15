@@ -7,6 +7,7 @@ optimized for batch processing on GPU.
 
 from .batch import MolecularGraphBatch
 from .batch_adapter import BatchAdapter
+from .engine_config import EngineConfig
 from .model_config import ModelConfig
 from .preprocessing import SAETransform, StandardScaler, PreprocessingPipeline
 from .featurizer import BatchFeaturizer
@@ -27,6 +28,7 @@ __all__ = [
     # Model
     "SimplifiedGNN",
     "ModelConfig",
+    "EngineConfig",
     # Preprocessing
     "SAETransform",
     "StandardScaler",
