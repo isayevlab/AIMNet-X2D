@@ -137,6 +137,23 @@ class TestAttentionPooling:
         assert not torch.isnan(output).any()
 
 
+def test_attention_pooling_numerical_stability_fp16():
+    """Test attention pooling with fp16 inputs for numerical stability."""
+    pooling = AttentionPooling(input_dim=64, num_heads=4)
+    pooling = pooling.half()  # Convert to fp16
+
+    # Create fp16 inputs
+    x = torch.randn(100, 64, dtype=torch.float16)
+    batch_idx = torch.tensor([0]*30 + [1]*40 + [2]*30, dtype=torch.long)
+
+    # Should not produce NaN or Inf
+    output = pooling(x, batch_idx)
+
+    assert not torch.isnan(output).any(), "Output contains NaN values"
+    assert torch.isfinite(output).all(), "Output contains Inf values"
+    assert output.shape == (3, 64)
+
+
 class TestFeedForwardNetwork:
     """Test FeedForwardNetwork."""
 

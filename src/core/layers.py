@@ -308,7 +308,7 @@ class AttentionPooling(nn.Module):
         )
 
         # Normalize to get attention weights [num_atoms, num_heads]
-        attention_weights = attention_exp / (attention_sum[batch_idx] + 1e-10)
+        attention_weights = attention_exp / (attention_sum[batch_idx] + 1e-6)
 
         # Weighted aggregation for each head
         # [num_atoms, num_heads, input_dim]
