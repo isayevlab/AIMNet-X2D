@@ -11,6 +11,7 @@ import torch.nn.functional as F
 
 from .layers import ShellConvolutionLayer, MultiLayerPerceptron
 from .pooling import create_pooling_layer
+from config.constants import MESSAGE_PASSING_RATIO, TETRAHEDRAL_MAGNITUDE_SCALE
 from utils.activation import get_activation_function
 from utils.logging import get_logger
 
@@ -98,7 +99,7 @@ class GNN(nn.Module):
         self.activation = get_activation_function(activation_type)
 
         # Split hidden representation for message passing and self features
-        self.x_other_dim = int(0.3 * hidden_dim)
+        self.x_other_dim = int(MESSAGE_PASSING_RATIO * hidden_dim)
         self.x_self_dim = hidden_dim - self.x_other_dim
 
         # Message passing layers
@@ -383,7 +384,7 @@ class GNN(nn.Module):
         avg_magnitude = torch.mean(emb_magnitudes, dim=1, keepdim=True)  # (M, 1, 1)
         
         # Apply soft magnitude scaling (bounded growth)
-        magnitude_scale = torch.tanh(avg_magnitude / 3.0)  # Bounded to [0, 1] roughly
+        magnitude_scale = torch.tanh(avg_magnitude / TETRAHEDRAL_MAGNITUDE_SCALE)  # Bounded to [0, 1] roughly
         
         # Scale the chirality features by magnitude information
         chirality_features = chirality_features * magnitude_scale

@@ -16,6 +16,7 @@ import wandb
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
+from config.constants import GRADIENT_CLIP_MAX_NORM, DEFAULT_EVIDENTIAL_LAMBDA
 from utils import get_layer_wise_learning_rates, is_main_process, safe_get_rank
 from utils.logging import get_logger
 from models import WeightedL1Loss, WeightedMSELoss, EvidentialLoss, WeightedEvidentialLoss
@@ -49,7 +50,7 @@ def _setup_loss_function(
         elif task_type == 'regression':
             criterion = nn.MSELoss()
     elif current_args.loss_function == 'evidential':
-        lambda_reg = getattr(current_args, 'evidential_lambda', 1.0)
+        lambda_reg = getattr(current_args, 'evidential_lambda', DEFAULT_EVIDENTIAL_LAMBDA)
         if task_type == 'multitask':
             w_tensor = torch.tensor(multitask_weights, dtype=torch.float)
             criterion = WeightedEvidentialLoss(w_tensor, lambda_reg=lambda_reg)
@@ -164,7 +165,7 @@ def _training_epoch(
                 
                 loss = criterion(outputs, targets)
             scaler.scale(loss).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRADIENT_CLIP_MAX_NORM)
             scaler.step(optimizer)
             scaler.update()
         else:
@@ -181,7 +182,7 @@ def _training_epoch(
                 logger.warning("NaN found in outputs!")
             loss = criterion(outputs, targets)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRADIENT_CLIP_MAX_NORM)
             optimizer.step()
 
         # Accumulate local sums for train loss
