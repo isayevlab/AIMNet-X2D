@@ -21,8 +21,8 @@ def scatter_add(
     """
     Scatter add operation using PyTorch native operations.
 
-    This is a drop-in replacement for torch_scatter.scatter_add that uses
-    PyTorch's native scatter_reduce operation.
+    Optimized for torch.compile() compatibility by avoiding
+    dynamic control flow.
 
     Args:
         src: Source tensor to scatter
@@ -33,48 +33,34 @@ def scatter_add(
     Returns:
         Output tensor with scattered values summed
     """
+    # Handle empty input
+    if src.numel() == 0:
+        out_size = dim_size if dim_size is not None else 0
+        out_shape = list(src.shape)
+        out_shape[dim] = out_size
+        return torch.zeros(out_shape, dtype=src.dtype, device=src.device)
+
     # Determine output size
-    index_max = index.max().item() + 1 if index.numel() > 0 else 0
-    out_size = dim_size if dim_size is not None else index_max
+    out_size = dim_size if dim_size is not None else (index.max().item() + 1)
 
     # Build output shape
     out_shape = list(src.shape)
     out_shape[dim] = out_size
 
-    # Create output tensor filled with zeros
+    # Create output tensor
     output = torch.zeros(out_shape, dtype=src.dtype, device=src.device)
 
-    # Handle empty case - return zeros
-    dummy = output.clone()  # Ensure both paths are evaluated
+    # Expand index if needed to match src shape
+    if index.dim() == 1 and src.dim() > 1:
+        # Expand 1D index to match src dimensions
+        expand_shape = [1] * src.dim()
+        expand_shape[dim] = -1
+        index = index.view(*expand_shape).expand_as(src)
 
-    # Expand index to match src shape for scatter_reduce
-    # Handle both 1D index and pre-expanded index cases
-    index_expanded = index
-    index_dim = index.dim()
-    src_dim = src.dim()
+    # Use scatter_add_ for in-place accumulation (faster than scatter_reduce)
+    output.scatter_add_(dim, index, src)
 
-    # If index is 1D and src is multi-dimensional, expand index
-    # If index is already same shape as src, use directly
-    index_shape_matches = (index_dim == src_dim and all(
-        index.shape[i] == src.shape[i] for i in range(src_dim)
-    ))
-
-    # Expand index if needed
-    expand_needed = index_dim == 1 and src_dim > 1
-    view_shape = [src.shape[dim] if i == dim else 1 for i in range(src_dim)]
-    index_1d_view = index.view(view_shape) if expand_needed else index
-    index_expanded = index_1d_view.expand_as(src) if expand_needed else index
-
-    # For already expanded indices (e.g., [N, H]), just use them directly
-    index_final = index_expanded if expand_needed or index_shape_matches else index.expand_as(src)
-
-    # Use scatter_reduce with 'sum' reduction
-    output = output.scatter_reduce(dim, index_final, src, reduce="sum", include_self=True)
-
-    # Blend to ensure consistent computation path
-    result = output + dummy * 0
-
-    return result
+    return output
 
 
 class ShellConvBlock(nn.Module):

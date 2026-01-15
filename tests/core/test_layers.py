@@ -3,7 +3,33 @@
 import torch
 import pytest
 
-from src.core.layers import ShellConvBlock, AttentionPooling, FeedForwardNetwork
+from src.core.layers import ShellConvBlock, AttentionPooling, FeedForwardNetwork, scatter_add
+
+
+def test_scatter_add_correctness():
+    """Test scatter_add produces correct results."""
+    # Simple test case
+    src = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    index = torch.tensor([0, 1, 0])
+
+    result = scatter_add(src, index, dim=0, dim_size=2)
+
+    # index 0: [1,2] + [5,6] = [6,8]
+    # index 1: [3,4]
+    expected = torch.tensor([[6.0, 8.0], [3.0, 4.0]])
+
+    assert torch.allclose(result, expected), f"Expected {expected}, got {result}"
+
+
+def test_scatter_add_empty_input():
+    """Test scatter_add handles empty inputs gracefully."""
+    src = torch.zeros(0, 64)
+    index = torch.zeros(0, dtype=torch.long)
+
+    result = scatter_add(src, index, dim=0, dim_size=10)
+
+    assert result.shape == (10, 64)
+    assert (result == 0).all()
 
 
 class TestShellConvBlock:
