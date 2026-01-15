@@ -10,19 +10,22 @@ import copy
 import tempfile
 import shutil
 import argparse
-from typing import Dict, Any, Optional, Tuple
+from typing import Any
 from pathlib import Path
 
 import torch
 import numpy as np
 
 from utils import set_seed
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # Import trial utilities from separate module to avoid circular imports
 from trial_utils import setup_trial_environment, cleanup_trial_environment, cleanup_temporary_files, validate_trial_arguments
 
-def setup_distributed_environment(args: argparse.Namespace) -> Tuple[torch.device, bool, int, int]:
+def setup_distributed_environment(args: argparse.Namespace) -> tuple[torch.device, bool, int, int]:
     """
     Setup distributed training environment.
     
@@ -55,24 +58,24 @@ def setup_distributed_environment(args: argparse.Namespace) -> Tuple[torch.devic
                 
                 is_ddp = True
                 
-                print(f"[DDP] Initialized: rank={dist.get_rank()}, "
+                logger.info(f"[DDP] Initialized: rank={dist.get_rank()}, "
                       f"local_rank={local_rank}, world_size={world_size}, device={device}")
                       
             except Exception as e:
-                print(f"[DDP] Failed to initialize: {e}")
-                print("Falling back to single GPU training")
+                logger.error(f"[DDP] Failed to initialize: {e}")
+                logger.warning("Falling back to single GPU training")
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
-            print("CUDA not available or world_size <= 1, using CPU/single GPU")
+            logger.info("CUDA not available or world_size <= 1, using CPU/single GPU")
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
         # Not running under torchrun, single process
         if args.num_gpu_devices > 1:
-            print("WARNING: num_gpu_devices > 1 but not running under torchrun")
-            print("Use: torchrun --nproc_per_node=N main.py ... for multi-GPU training")
-        
+            logger.warning("num_gpu_devices > 1 but not running under torchrun")
+            logger.info("Use: torchrun --nproc_per_node=N main.py ... for multi-GPU training")
+
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"[Single-Process] Using device: {device}")
+        logger.info(f"[Single-Process] Using device: {device}")
     
     return device, is_ddp, local_rank, world_size
 
@@ -181,38 +184,38 @@ def get_experiment_id(args: argparse.Namespace) -> str:
 
 def log_system_info() -> None:
     """Log system information for debugging and reproducibility."""
-    print("="*60)
-    print("SYSTEM INFORMATION")
-    print("="*60)
-    
+    logger.info("=" * 60)
+    logger.info("SYSTEM INFORMATION")
+    logger.info("=" * 60)
+
     # PyTorch info
-    print(f"PyTorch version: {torch.__version__}")
-    print(f"CUDA available: {torch.cuda.is_available()}")
+    logger.info(f"PyTorch version: {torch.__version__}")
+    logger.info(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
-        print(f"CUDA version: {torch.version.cuda}")
-        print(f"GPU devices: {torch.cuda.device_count()}")
+        logger.info(f"CUDA version: {torch.version.cuda}")
+        logger.info(f"GPU devices: {torch.cuda.device_count()}")
         for i in range(torch.cuda.device_count()):
-            print(f"  Device {i}: {torch.cuda.get_device_name(i)}")
-    
+            logger.info(f"  Device {i}: {torch.cuda.get_device_name(i)}")
+
     # System info
     import platform
-    print(f"Platform: {platform.platform()}")
-    print(f"Python version: {platform.python_version()}")
-    print(f"CPU cores: {os.cpu_count()}")
-    
+    logger.info(f"Platform: {platform.platform()}")
+    logger.info(f"Python version: {platform.python_version()}")
+    logger.info(f"CPU cores: {os.cpu_count()}")
+
     # Memory info
     try:
         import psutil
         memory = psutil.virtual_memory()
-        print(f"Total memory: {memory.total / (1024**3):.2f} GB")
-        print(f"Available memory: {memory.available / (1024**3):.2f} GB")
+        logger.info(f"Total memory: {memory.total / (1024**3):.2f} GB")
+        logger.info(f"Available memory: {memory.available / (1024**3):.2f} GB")
     except ImportError:
-        print("Memory info unavailable (psutil not installed)")
-    
-    print("="*60)
+        logger.debug("Memory info unavailable (psutil not installed)")
+
+    logger.info("=" * 60)
 
 
-def create_experiment_summary(args: argparse.Namespace, results: Dict[str, Any]) -> Dict[str, Any]:
+def create_experiment_summary(args: argparse.Namespace, results: dict[str, Any]) -> dict[str, Any]:
     """
     Create a comprehensive experiment summary.
     
@@ -273,7 +276,7 @@ def create_experiment_summary(args: argparse.Namespace, results: Dict[str, Any])
     return summary
 
 
-def save_experiment_summary(summary: Dict[str, Any], output_path: str) -> None:
+def save_experiment_summary(summary: dict[str, Any], output_path: str) -> None:
     """
     Save experiment summary to file.
     
@@ -289,8 +292,8 @@ def save_experiment_summary(summary: Dict[str, Any], output_path: str) -> None:
     # Save summary
     with open(output_path, 'w') as f:
         json.dump(summary, f, indent=2, default=str)
-    
-    print(f"Experiment summary saved to: {output_path}")
+
+    logger.info(f"Experiment summary saved to: {output_path}")
 
 
 def handle_inference_mode(args: argparse.Namespace) -> bool:
@@ -304,8 +307,8 @@ def handle_inference_mode(args: argparse.Namespace) -> bool:
         True if in inference mode, False otherwise
     """
     if args.inference_csv or args.inference_hdf5:
-        print("Running in inference mode - training will be skipped")
-        
+        logger.info("Running in inference mode - training will be skipped")
+
         # Auto-generate output path if not provided
         if not args.inference_output:
             if args.inference_csv:
@@ -314,7 +317,7 @@ def handle_inference_mode(args: argparse.Namespace) -> bool:
             elif args.inference_hdf5:
                 base = os.path.splitext(args.inference_hdf5)[0]
                 args.inference_output = f"{base}_predictions.csv"
-            print(f"Using auto-generated output path: {args.inference_output}")
+            logger.info(f"Using auto-generated output path: {args.inference_output}")
         
         # Ensure output directory exists
         if args.inference_output:
@@ -342,7 +345,7 @@ def check_hyperparameter_optimization_mode(args: argparse.Namespace) -> str:
         return 'none'
 
 
-def prepare_wandb_config(args: argparse.Namespace) -> Dict[str, Any]:
+def prepare_wandb_config(args: argparse.Namespace) -> dict[str, Any]:
     """Prepare configuration dictionary for Weights & Biases logging."""
     wandb_config = {
         # Model architecture
@@ -382,7 +385,7 @@ def prepare_wandb_config(args: argparse.Namespace) -> Dict[str, Any]:
     
     return wandb_config
 
-def setup_experiment_logging(args: argparse.Namespace) -> Optional[Any]:
+def setup_experiment_logging(args: argparse.Namespace) -> Any | None:
     """Setup experiment logging with Weights & Biases."""
     if not args.enable_wandb:
         return None
@@ -416,23 +419,23 @@ def setup_experiment_logging(args: argparse.Namespace) -> Optional[Any]:
             tags=tags,
             name=get_experiment_id(args),
         )
-        
-        print(f"Weights & Biases logging initialized:")
-        print(f"  Project: {args.wandb_project}")
-        print(f"  Run: {run.name}")
-        print(f"  URL: {run.url}")
-        
+
+        logger.info("Weights & Biases logging initialized:")
+        logger.info(f"  Project: {args.wandb_project}")
+        logger.info(f"  Run: {run.name}")
+        logger.info(f"  URL: {run.url}")
+
         return run
-        
+
     except ImportError:
-        print("WARNING: Weights & Biases requested but not available. Install with:")
-        print("  pip install wandb")
+        logger.warning("Weights & Biases requested but not available. Install with:")
+        logger.warning("  pip install wandb")
         return None
     except Exception as e:
-        print(f"WARNING: Failed to initialize Weights & Biases: {e}")
+        logger.warning(f"Failed to initialize Weights & Biases: {e}")
         return None
 
-def finalize_experiment_logging(wandb_run, results: Dict[str, Any]) -> None:
+def finalize_experiment_logging(wandb_run, results: dict[str, Any]) -> None:
     """
     Finalize experiment logging by uploading final results and artifacts.
     
@@ -462,60 +465,60 @@ def finalize_experiment_logging(wandb_run, results: Dict[str, Any]) -> None:
         
         # Finish the run
         wandb.finish()
-        
+
     except Exception as e:
-        print(f"WARNING: Failed to finalize Weights & Biases logging: {e}")
+        logger.warning(f"Failed to finalize Weights & Biases logging: {e}")
 
 
-def print_final_summary(results: Dict[str, Any], args: argparse.Namespace) -> None:
+def print_final_summary(results: dict[str, Any], args: argparse.Namespace) -> None:
     """
     Print a final summary of the experiment results.
-    
+
     Args:
         results: Experiment results
         args: Command line arguments
     """
-    print("\n" + "="*80)
-    print("EXPERIMENT COMPLETED")
-    print("="*80)
-    
+    logger.info("\n" + "=" * 80)
+    logger.info("EXPERIMENT COMPLETED")
+    logger.info("=" * 80)
+
     if "test_metrics" in results:
         test_metrics = results["test_metrics"]
-        
-        print("Final Test Results:")
+
+        logger.info("Final Test Results:")
         if args.task_type == 'multitask':
-            print(f"  Loss: {test_metrics.get('loss', 'N/A'):.6f}")
-            print(f"  MAE (avg): {test_metrics.get('mae', 'N/A'):.6f}")
-            print(f"  RMSE (avg): {test_metrics.get('rmse', 'N/A'):.6f}")
-            print(f"  R² (avg): {test_metrics.get('r2', 'N/A'):.6f}")
-            
+            logger.info(f"  Loss: {test_metrics.get('loss', 'N/A'):.6f}")
+            logger.info(f"  MAE (avg): {test_metrics.get('mae', 'N/A'):.6f}")
+            logger.info(f"  RMSE (avg): {test_metrics.get('rmse', 'N/A'):.6f}")
+            logger.info(f"  R2 (avg): {test_metrics.get('r2', 'N/A'):.6f}")
+
             # Per-task metrics if available
             if 'mae_per_target' in test_metrics and args.multi_target_columns_list:
-                print("\n  Per-task Results:")
+                logger.info("\n  Per-task Results:")
                 for i, col_name in enumerate(args.multi_target_columns_list):
                     if i < len(test_metrics['mae_per_target']):
                         mae_i = test_metrics['mae_per_target'][i]
                         rmse_i = test_metrics['rmse_per_target'][i]
                         r2_i = test_metrics['r2_per_target'][i]
-                        print(f"    {col_name}: MAE={mae_i:.6f}, RMSE={rmse_i:.6f}, R²={r2_i:.6f}")
+                        logger.info(f"    {col_name}: MAE={mae_i:.6f}, RMSE={rmse_i:.6f}, R2={r2_i:.6f}")
         else:
-            print(f"  Loss: {test_metrics.get('loss', 'N/A'):.6f}")
-            print(f"  MAE: {test_metrics.get('mae', 'N/A'):.6f}")
-            print(f"  RMSE: {test_metrics.get('rmse', 'N/A'):.6f}")
-            print(f"  R²: {test_metrics.get('r2', 'N/A'):.6f}")
-    
+            logger.info(f"  Loss: {test_metrics.get('loss', 'N/A'):.6f}")
+            logger.info(f"  MAE: {test_metrics.get('mae', 'N/A'):.6f}")
+            logger.info(f"  RMSE: {test_metrics.get('rmse', 'N/A'):.6f}")
+            logger.info(f"  R2: {test_metrics.get('r2', 'N/A'):.6f}")
+
     # Training info
     if "training_time" in results:
-        print(f"\nTraining time: {results['training_time']:.2f} seconds")
-    
+        logger.info(f"\nTraining time: {results['training_time']:.2f} seconds")
+
     if "best_epoch" in results:
-        print(f"Best epoch: {results['best_epoch']}")
-    
+        logger.info(f"Best epoch: {results['best_epoch']}")
+
     # Output paths
     if "model_path" in results:
-        print(f"\nModel saved to: {results['model_path']}")
-    
+        logger.info(f"\nModel saved to: {results['model_path']}")
+
     if "embeddings_path" in results and os.path.exists(results["embeddings_path"]):
-        print(f"Embeddings saved to: {results['embeddings_path']}")
-    
-    print("="*80)
+        logger.info(f"Embeddings saved to: {results['embeddings_path']}")
+
+    logger.info("=" * 80)
