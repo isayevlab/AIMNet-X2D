@@ -103,6 +103,7 @@ class ModelLoader:
             config: InferenceConfig containing model path and settings.
         """
         self.config = config
+        self.device: torch.device | None = None
 
     def load(self, device: torch.device) -> tuple[GNN, PreprocessingPipeline | None, dict[str, Any]]:
         """
@@ -123,7 +124,9 @@ class ModelLoader:
 
     def _load_model_and_preprocessing(self) -> tuple[GNN, PreprocessingPipeline | None, dict[str, Any]]:
         """Load model and reconstruct preprocessing pipeline."""
-        if not self.config.model_path or not os.path.exists(self.config.model_path):
+        if not self.config.model_path:
+            raise ValueError("Model path not specified in configuration")
+        if not os.path.exists(self.config.model_path):
             raise FileNotFoundError(f"Model file not found: {self.config.model_path}")
 
         # Load model artifact
@@ -227,11 +230,7 @@ class ModelLoader:
 
         # CRITICAL FIX: Strict loading with proper error handling
         try:
-            missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
-            if missing_keys:
-                raise ValueError(f"Missing keys in state dict: {missing_keys}")
-            if unexpected_keys:
-                raise ValueError(f"Unexpected keys in state dict: {unexpected_keys}")
+            model.load_state_dict(state_dict, strict=True)
         except Exception as e:
             raise ValueError(f"Failed to load model state dict: {e}") from e
 
