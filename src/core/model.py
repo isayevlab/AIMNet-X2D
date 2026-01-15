@@ -191,3 +191,21 @@ class SimplifiedGNN(nn.Module):
         output = self.output_layer(x)
 
         return output
+
+    def compile(self, **kwargs) -> "SimplifiedGNN":
+        """
+        Compile the model with torch.compile() for optimized execution.
+
+        Args:
+            **kwargs: Arguments passed to torch.compile()
+                      Default mode is "reduce-overhead" for inference.
+
+        Returns:
+            Compiled model (or self if torch.compile unavailable)
+        """
+        if not hasattr(torch, 'compile'):
+            logger.warning("torch.compile not available, returning uncompiled model")
+            return self
+
+        mode = kwargs.pop('mode', 'reduce-overhead')
+        return torch.compile(self, mode=mode, **kwargs)

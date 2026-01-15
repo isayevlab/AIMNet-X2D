@@ -281,3 +281,59 @@ def test_model_without_charges_still_works():
 
     output = model(batch)
     assert output.shape == (1, 1)
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, 'compile'),
+    reason="torch.compile not available"
+)
+def test_model_torch_compile_compatible():
+    """Test that model can be compiled with torch.compile()."""
+    config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+    model = SimplifiedGNN(config)
+
+    # Compile the model
+    compiled_model = torch.compile(model, mode="reduce-overhead")
+
+    # Create test batch
+    batch = MolecularGraphBatch(
+        atom_types=torch.randint(0, 10, (15,), dtype=torch.int32),
+        degrees=torch.randint(0, 5, (15,), dtype=torch.int32),
+        hybridizations=torch.randint(0, 6, (15,), dtype=torch.int32),
+        hydrogen_counts=torch.randint(0, 5, (15,), dtype=torch.int32),
+        batch_idx=torch.tensor([0]*5 + [1]*5 + [2]*5, dtype=torch.int64),
+        ptr=torch.tensor([0, 5, 10, 15], dtype=torch.int64),
+        edge_indices=[
+            torch.randint(0, 15, (2, 20), dtype=torch.int64),
+            torch.randint(0, 15, (2, 15), dtype=torch.int64),
+        ],
+        num_molecules=3,
+    )
+
+    # Run forward pass - should not raise graph break errors
+    output = compiled_model(batch)
+
+    assert output.shape == (3, 1)
+    assert not torch.isnan(output).any()
+
+
+def test_model_compile_helper_method():
+    """Test the model's compile() helper method."""
+    config = ModelConfig(hidden_dim=32, output_dim=1)
+    model = SimplifiedGNN(config)
+
+    # Test that compile method exists and returns a model
+    compiled = model.compile()
+    assert compiled is not None
+
+    # Should still be callable
+    batch = MolecularGraphBatch(
+        atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+        batch_idx=torch.tensor([0]*10, dtype=torch.int64),
+        ptr=torch.tensor([0, 10], dtype=torch.int64),
+        edge_indices=[torch.randint(0, 10, (2, 15))],
+        num_molecules=1,
+    )
+
+    output = compiled(batch)
+    assert output.shape == (1, 1)
