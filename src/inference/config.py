@@ -3,7 +3,6 @@ Configuration classes for inference pipeline.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 from pathlib import Path
 
 from datasets.constants import (

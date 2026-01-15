@@ -4,7 +4,6 @@ High-level inference engine and legacy compatibility.
 
 import torch
 import torch.distributed as dist
-from typing import Optional, List
 
 from .config import InferenceConfig
 from .pipeline import InferencePipeline
@@ -177,7 +176,7 @@ class InferenceEngine:
         if self.config.save_embeddings and is_main_process():
             self._extract_hdf5_embeddings(inference_loader, device)
 
-    def _gather_smiles_ddp(self, local_smiles: List[str], device: torch.device) -> List[str]:
+    def _gather_smiles_ddp(self, local_smiles: list[str], device: torch.device) -> list[str]:
         """
         Gather SMILES from all ranks to rank 0.
         

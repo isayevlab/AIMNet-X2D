@@ -3,15 +3,18 @@ Preprocessing pipeline reconstruction for inference.
 """
 
 import numpy as np
-from typing import Optional, Dict, Any
+from typing import Any
 
 from data.preprocessing import PreprocessingPipeline, PreprocessingConfig, SAENormalizer, StandardScaler
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class PreprocessingReconstructor:
 
     @staticmethod
-    def load_preprocessing_pipeline(model_artifact: Dict[str, Any]) -> Optional[PreprocessingPipeline]:
+    def load_preprocessing_pipeline(model_artifact: dict[str, Any]) -> PreprocessingPipeline | None:
         """
         CRITICAL FIX: Properly reconstruct ALL preprocessing pipeline parameters from saved model.
         """
@@ -35,7 +38,7 @@ class PreprocessingReconstructor:
             sae_percentile_cutoff=preprocessing_info.get("sae_percentile_cutoff", 2.0)
         )
         
-        print(f"[Preprocessing] Loaded config: SAE={config.apply_sae}, Scaling={config.apply_standard_scaling}, Task={config.task_type}")
+        logger.info(f"Loaded config: SAE={config.apply_sae}, Scaling={config.apply_standard_scaling}, Task={config.task_type}")
         
         # Create pipeline
         pipeline = PreprocessingPipeline(config)
@@ -55,7 +58,7 @@ class PreprocessingReconstructor:
             )
             pipeline.sae_normalizer.sae_statistics = hyperparams["sae_statistics"]
             pipeline.sae_normalizer.is_fitted = True
-            print(f"[Preprocessing] ✅ Restored SAE normalizer with {len(hyperparams['sae_statistics'])} task(s)")
+            logger.info(f"Restored SAE normalizer with {len(hyperparams['sae_statistics'])} task(s)")
         
         # CRITICAL FIX: Restore standard scaler with proper error handling
         if config.apply_standard_scaling:
@@ -70,7 +73,7 @@ class PreprocessingReconstructor:
             pipeline.standard_scaler.means = np.array(hyperparams["scaler_means"])
             pipeline.standard_scaler.stds = np.array(hyperparams["scaler_stds"])
             pipeline.standard_scaler.is_fitted = True
-            print(f"[Preprocessing] ✅ Restored standard scaler: means={pipeline.standard_scaler.means}, stds={pipeline.standard_scaler.stds}")
+            logger.info(f"Restored standard scaler: means={pipeline.standard_scaler.means}, stds={pipeline.standard_scaler.stds}")
         
         pipeline.is_fitted = True
         
@@ -80,7 +83,7 @@ class PreprocessingReconstructor:
         return pipeline
 
     @staticmethod
-    def _validate_preprocessing_pipeline(pipeline: PreprocessingPipeline, hyperparams: Dict[str, Any]) -> None:
+    def _validate_preprocessing_pipeline(pipeline: PreprocessingPipeline, hyperparams: dict[str, Any]) -> None:
         """Validate that preprocessing pipeline is correctly reconstructed."""
         config = pipeline.config
         
@@ -98,13 +101,13 @@ class PreprocessingReconstructor:
             if not pipeline.standard_scaler or not pipeline.standard_scaler.is_fitted:
                 raise ValueError("Standard scaling enabled but scaler not properly restored")
         
-        print(f"[Preprocessing] ✅ Preprocessing pipeline validation passed")
+        logger.info("Preprocessing pipeline validation passed")
 
     @staticmethod
-    def _load_legacy_format(hyperparams: Dict[str, Any]) -> Optional[PreprocessingPipeline]:
+    def _load_legacy_format(hyperparams: dict[str, Any]) -> PreprocessingPipeline | None:
         """Load legacy preprocessing format with error handling."""
         if "scaler_means" in hyperparams and hyperparams["scaler_means"] is not None:
-            print("[Preprocessing] Detected legacy model format, reconstructing standard scaler only")
+            logger.info("Detected legacy model format, reconstructing standard scaler only")
             
             config = PreprocessingConfig(
                 apply_sae=False,
@@ -122,7 +125,7 @@ class PreprocessingReconstructor:
             pipeline.standard_scaler.is_fitted = True
             pipeline.is_fitted = True
             
-            print("[Preprocessing] Legacy preprocessing pipeline restored")
+            logger.info("Legacy preprocessing pipeline restored")
             return pipeline
         
         # CRITICAL FIX: If no preprocessing information found, raise clear error

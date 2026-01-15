@@ -5,7 +5,7 @@ Uncertainty estimation for inference.
 import torch
 import torch.nn as nn
 import numpy as np
-from typing import Tuple, List, Optional, Callable, Union
+from collections.abc import Callable
 from tqdm import tqdm
 
 from utils.distributed import safe_get_rank
@@ -18,7 +18,7 @@ class UncertaintyEstimator:
         self.model = model
         self.device = device
     
-    def predict_with_uncertainty(self, data_loader, **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+    def predict_with_uncertainty(self, data_loader, **kwargs) -> tuple[np.ndarray, np.ndarray]:
         """
         Make predictions with uncertainty estimates.
         
@@ -35,12 +35,12 @@ class MCDropoutPredictor(UncertaintyEstimator):
         self.num_samples = num_samples
     
     def predict_with_uncertainty(
-        self, 
-        data_loader, 
+        self,
+        data_loader,
         preprocessing_pipeline=None,
         show_progress: bool = True,
-        embedding_callback: Optional[Callable] = None
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        embedding_callback: Callable | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Predict with Monte Carlo Dropout uncertainty estimation.
         
@@ -118,7 +118,7 @@ class MCDropoutPredictor(UncertaintyEstimator):
         else:
             self.model.apply(enable_dropout_fn)
     
-    def _single_forward_pass(self, data_loader, embedding_callback: Optional[Callable] = None, collect_smiles: bool = False) -> Union[List[np.ndarray], Tuple[List[np.ndarray], List[str]]]:
+    def _single_forward_pass(self, data_loader, embedding_callback: Callable | None = None, collect_smiles: bool = False) -> list[np.ndarray] | tuple[list[np.ndarray], list[str]]:
         """Perform a single forward pass through the data."""
         predictions = []
         smiles_list = [] if collect_smiles else None
@@ -171,10 +171,10 @@ class DeterministicPredictor:
         self.device = device
     
     def predict(
-        self, 
-        data_loader, 
+        self,
+        data_loader,
         preprocessing_pipeline=None,
-        embedding_callback: Optional[Callable] = None,
+        embedding_callback: Callable | None = None,
         show_progress: bool = True
     ) -> np.ndarray:
         """
