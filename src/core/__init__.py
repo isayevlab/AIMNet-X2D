@@ -10,19 +10,31 @@ from .batch_adapter import BatchAdapter
 from .model_config import ModelConfig
 from .preprocessing import SAETransform, StandardScaler, PreprocessingPipeline
 from .featurizer import BatchFeaturizer
-from .layers import ShellConvBlock, AttentionPooling, FeedForwardNetwork
+from .layers import (
+    scatter_add,
+    ShellConvBlock,
+    AttentionPooling,
+    FeedForwardNetwork,
+    StereochemistryEncoder,
+)
 from .model import SimplifiedGNN
 
 __all__ = [
+    # Data
     "MolecularGraphBatch",
+    "BatchFeaturizer",
     "BatchAdapter",
+    # Model
+    "SimplifiedGNN",
     "ModelConfig",
+    # Preprocessing
     "SAETransform",
     "StandardScaler",
     "PreprocessingPipeline",
-    "BatchFeaturizer",
+    # Layers
+    "scatter_add",
     "ShellConvBlock",
     "AttentionPooling",
     "FeedForwardNetwork",
-    "SimplifiedGNN",
+    "StereochemistryEncoder",
 ]
