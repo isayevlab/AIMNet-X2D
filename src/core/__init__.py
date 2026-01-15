@@ -10,6 +10,7 @@ from .model_config import ModelConfig
 from .preprocessing import SAETransform, StandardScaler, PreprocessingPipeline
 from .featurizer import BatchFeaturizer
 from .layers import ShellConvBlock, AttentionPooling, FeedForwardNetwork
+from .model import SimplifiedGNN
 
 __all__ = [
     "MolecularGraphBatch",
@@ -21,4 +22,5 @@ __all__ = [
     "ShellConvBlock",
     "AttentionPooling",
     "FeedForwardNetwork",
+    "SimplifiedGNN",
 ]
