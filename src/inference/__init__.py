@@ -15,6 +15,15 @@ from .uncertainty import MCDropoutPredictor, UncertaintyEstimator
 from .embeddings import EmbeddingExtractor, StreamingEmbeddingWriter
 from .preprocessing import PreprocessingReconstructor
 
+# HDF5 validation utilities
+from .hdf5_validation import (
+    _check_hdf5_max_hops_compatibility,
+    _check_hdf5_preprocessing_compatibility,
+    _check_hdf5_task_type_compatibility,
+    _check_hdf5_inference_data_compatibility,
+    _format_compatibility_error,
+)
+
 # Legacy function for backward compatibility
 from .engine import inference_main
 
@@ -36,6 +45,13 @@ __all__ = [
 
     # Preprocessing
     "PreprocessingReconstructor",
+
+    # HDF5 validation
+    "_check_hdf5_max_hops_compatibility",
+    "_check_hdf5_preprocessing_compatibility",
+    "_check_hdf5_task_type_compatibility",
+    "_check_hdf5_inference_data_compatibility",
+    "_format_compatibility_error",
 
     # Legacy
     "inference_main",
