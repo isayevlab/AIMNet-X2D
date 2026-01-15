@@ -3,7 +3,7 @@
 import torch
 import numpy as np
 import pytest
-from src.core.preprocessing import SAETransform
+from src.core.preprocessing import SAETransform, StandardScaler, PreprocessingPipeline
 
 
 class TestSAETransform:
@@ -83,3 +83,86 @@ class TestSAETransform:
         sae_shift = 1.0 + 1.0 + 2.0  # = 4.0
         expected = torch.tensor([[5.0, 10.0 - sae_shift, 20.0 - sae_shift]])
         assert torch.allclose(transformed, expected)
+
+
+class TestStandardScaler:
+    """Test GPU-native standard scaling."""
+
+    def test_fit_transform(self):
+        """Test fitting and transforming."""
+        targets = torch.tensor([[1.0], [2.0], [3.0], [4.0], [5.0]])
+
+        scaler = StandardScaler.fit(targets)
+        transformed = scaler.transform_batch(targets)
+
+        assert torch.abs(transformed.mean()) < 1e-5
+        assert torch.abs(transformed.std(unbiased=False) - 1.0) < 1e-5
+
+    def test_inverse_transform(self):
+        """Test inverse transformation."""
+        targets = torch.tensor([[10.0], [20.0], [30.0]])
+
+        scaler = StandardScaler.fit(targets)
+        transformed = scaler.transform_batch(targets)
+        recovered = scaler.inverse_transform_batch(transformed)
+
+        assert torch.allclose(recovered, targets, atol=1e-5)
+
+
+class TestPreprocessingPipeline:
+    """Test combined preprocessing pipeline."""
+
+    def test_sae_then_scale(self):
+        """Test SAE followed by scaling."""
+        atomic_numbers = [
+            [6, 6, 8],
+            [6, 6, 6, 7],
+        ]
+        targets = np.array([[100.0], [150.0]])
+
+        pipeline = PreprocessingPipeline.fit(
+            atomic_numbers_list=atomic_numbers,
+            targets=targets,
+            apply_sae=True,
+            sae_subtasks=[0],
+            apply_scaling=True,
+        )
+
+        atomic_nums_tensor = torch.tensor([
+            [6, 6, 8, 0],
+            [6, 6, 6, 7],
+        ], dtype=torch.int64)
+        atom_counts = torch.tensor([3, 4], dtype=torch.int64)
+        targets_tensor = torch.tensor([[100.0], [150.0]])
+
+        transformed = pipeline.transform_batch(
+            atomic_nums_tensor, atom_counts, targets_tensor
+        )
+
+        assert transformed.shape == (2, 1)
+
+    def test_inverse_full_pipeline(self):
+        """Test full inverse transformation."""
+        atomic_numbers = [[6, 6], [6, 6, 6]]
+        targets = np.array([[50.0], [75.0]])
+
+        pipeline = PreprocessingPipeline.fit(
+            atomic_numbers_list=atomic_numbers,
+            targets=targets,
+            apply_sae=True,
+            sae_subtasks=[0],
+            apply_scaling=True,
+        )
+
+        atomic_nums_tensor = torch.tensor([[6, 6, 0], [6, 6, 6]], dtype=torch.int64)
+        atom_counts = torch.tensor([2, 3], dtype=torch.int64)
+        targets_tensor = torch.tensor([[50.0], [75.0]])
+
+        transformed = pipeline.transform_batch(
+            atomic_nums_tensor, atom_counts, targets_tensor
+        )
+        recovered = pipeline.inverse_transform_batch(
+            atomic_nums_tensor, atom_counts, transformed
+        )
+
+        assert torch.allclose(recovered, targets_tensor, atol=1e-4)

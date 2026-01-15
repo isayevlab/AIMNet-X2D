@@ -152,3 +152,148 @@ class SAETransform:
             subtasks=state["subtasks"],
             max_atomic_num=state.get("max_atomic_num", 119),
         )
+
+
+@dataclass
+class StandardScaler:
+    """GPU-native standard scaling (zero mean, unit variance)."""
+
+    mean: torch.Tensor
+    std: torch.Tensor
+    eps: float = 1e-8
+
+    @classmethod
+    def fit(cls, targets: torch.Tensor, eps: float = 1e-8) -> StandardScaler:
+        """Fit scaler to targets."""
+        mean = targets.mean(dim=0)
+        std = targets.std(dim=0, unbiased=False)
+        std = torch.clamp(std, min=eps)
+        return cls(mean=mean, std=std, eps=eps)
+
+    def transform_batch(self, targets: torch.Tensor) -> torch.Tensor:
+        """Apply scaling."""
+        mean = self.mean.to(targets.device)
+        std = self.std.to(targets.device)
+        return (targets - mean) / std
+
+    def inverse_transform_batch(self, normalized: torch.Tensor) -> torch.Tensor:
+        """Inverse scaling."""
+        mean = self.mean.to(normalized.device)
+        std = self.std.to(normalized.device)
+        return normalized * std + mean
+
+    def state_dict(self) -> dict[str, Any]:
+        """Serialize."""
+        return {
+            "mean": self.mean.cpu().numpy().tolist(),
+            "std": self.std.cpu().numpy().tolist(),
+            "eps": self.eps,
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: dict[str, Any]) -> StandardScaler:
+        """Deserialize."""
+        return cls(
+            mean=torch.tensor(state["mean"]),
+            std=torch.tensor(state["std"]),
+            eps=state.get("eps", 1e-8),
+        )
+
+
+@dataclass
+class PreprocessingPipeline:
+    """Combined preprocessing pipeline: SAE -> Scaling."""
+
+    sae_transform: SAETransform | None = None
+    scaler: StandardScaler | None = None
+
+    @classmethod
+    def fit(
+        cls,
+        atomic_numbers_list: list[list[int]],
+        targets: np.ndarray,
+        apply_sae: bool = False,
+        sae_subtasks: list[int] | None = None,
+        apply_scaling: bool = True,
+    ) -> PreprocessingPipeline:
+        """Fit preprocessing pipeline."""
+        if targets.ndim == 1:
+            targets = targets.reshape(-1, 1)
+
+        targets_tensor = torch.from_numpy(targets).float()
+
+        sae_transform = None
+        if apply_sae and sae_subtasks:
+            sae_transform = SAETransform.fit(
+                atomic_numbers_list, targets, sae_subtasks
+            )
+            max_atoms = max(len(nums) for nums in atomic_numbers_list)
+            atomic_nums_padded = torch.zeros(len(atomic_numbers_list), max_atoms, dtype=torch.int64)
+            atom_counts = torch.zeros(len(atomic_numbers_list), dtype=torch.int64)
+
+            for i, nums in enumerate(atomic_numbers_list):
+                atomic_nums_padded[i, :len(nums)] = torch.tensor(nums)
+                atom_counts[i] = len(nums)
+
+            targets_tensor = sae_transform.transform_batch(
+                atomic_nums_padded, atom_counts, targets_tensor
+            )
+
+        scaler = None
+        if apply_scaling:
+            scaler = StandardScaler.fit(targets_tensor)
+
+        return cls(sae_transform=sae_transform, scaler=scaler)
+
+    def transform_batch(
+        self,
+        atomic_numbers: torch.Tensor,
+        atom_counts: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply full pipeline."""
+        result = targets
+
+        if self.sae_transform is not None:
+            result = self.sae_transform.transform_batch(
+                atomic_numbers, atom_counts, result
+            )
+
+        if self.scaler is not None:
+            result = self.scaler.transform_batch(result)
+
+        return result
+
+    def inverse_transform_batch(
+        self,
+        atomic_numbers: torch.Tensor,
+        atom_counts: torch.Tensor,
+        normalized: torch.Tensor,
+    ) -> torch.Tensor:
+        """Inverse full pipeline (reverse order)."""
+        result = normalized
+
+        if self.scaler is not None:
+            result = self.scaler.inverse_transform_batch(result)
+
+        if self.sae_transform is not None:
+            result = self.sae_transform.inverse_transform_batch(
+                atomic_numbers, atom_counts, result
+            )
+
+        return result
+
+    def state_dict(self) -> dict[str, Any]:
+        """Serialize."""
+        return {
+            "sae_transform": self.sae_transform.state_dict() if self.sae_transform else None,
+            "scaler": self.scaler.state_dict() if self.scaler else None,
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: dict[str, Any]) -> PreprocessingPipeline:
+        """Deserialize."""
+        return cls(
+            sae_transform=SAETransform.from_state_dict(state["sae_transform"]) if state.get("sae_transform") else None,
+            scaler=StandardScaler.from_state_dict(state["scaler"]) if state.get("scaler") else None,
+        )
