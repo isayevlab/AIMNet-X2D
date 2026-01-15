@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from utils.distributed import safe_get_rank, is_main_process
+from datasets.constants import DEFAULT_PROGRESS_LOG_INTERVAL, DEFAULT_BATCH_FLUSH_THRESHOLD
 
 
 class EmbeddingExtractor:
@@ -258,14 +259,14 @@ class StreamingEmbeddingWriter:
         self.current_index += batch_size
         
         # Show progress for embeddings if this is the main rank
-        if self.rank == 0 and self.current_index % 1000 == 0:
+        if self.rank == 0 and self.current_index % DEFAULT_PROGRESS_LOG_INTERVAL == 0:
             if self.include_atom_embeddings:
                 print(f"[Embeddings] Processed {self.current_index} molecules (mol + atom embeddings)")
             else:
                 print(f"[Embeddings] Processed {self.current_index} molecules (mol embeddings)")
         
         # Periodic flush to avoid memory issues
-        if len(self.all_mol_embeddings) > 100:  # Flush every 100 batches
+        if len(self.all_mol_embeddings) > DEFAULT_BATCH_FLUSH_THRESHOLD:
             self._partial_write()
     
     def _partial_write(self):

@@ -26,6 +26,7 @@ For detailed documentation and examples, visit the project repository.
 
 import sys
 import os
+import logging
 from pathlib import Path
 
 def setup_python_path():
@@ -39,6 +40,13 @@ def setup_python_path():
 # Always setup path first
 setup_python_path()
 
+# Initialize logging after path setup
+from utils.logging import setup_logging, get_logger
+
+# Setup logging (rank will be updated later if DDP)
+setup_logging()
+logger = get_logger(__name__)
+
 
 def import_modules():
     """Import required modules with proper error handling."""
@@ -48,7 +56,7 @@ def import_modules():
         from main.hyperopt import run_hyperparameter_optimization
         from main.utils import check_hyperparameter_optimization_mode
         from config import validate_args
-        
+
         return {
             'main_runner': main_runner,
             'parse_main_arguments': parse_main_arguments,
@@ -57,12 +65,12 @@ def import_modules():
             'check_hyperparameter_optimization_mode': check_hyperparameter_optimization_mode,
             'validate_args': validate_args
         }
-        
+
     except ImportError as e:
-        print(f"Import error: {e}")
-        print("Make sure you're running from the project root directory and all dependencies are installed.")
-        print(f"Current working directory: {os.getcwd()}")
-        print(f"Python path: {sys.path}")
+        logger.error(f"Import error: {e}")
+        logger.error("Make sure you're running from the project root directory and all dependencies are installed.")
+        logger.debug(f"Current working directory: {os.getcwd()}")
+        logger.debug(f"Python path: {sys.path}")
         sys.exit(1)
 
 
@@ -73,7 +81,7 @@ def run_single_experiment(args, modules):
 
 def run_hyperparameter_optimization(args, modules):
     """Run hyperparameter optimization."""
-    print("Running hyperparameter optimization...")
+    logger.info("Running hyperparameter optimization...")
     return modules['run_hyperparameter_optimization'](args)
 
 
@@ -82,42 +90,42 @@ def main():
     try:
         # Import all required modules
         modules = import_modules()
-        
+
         # Parse command line arguments
         args = modules['parse_main_arguments']()
-        
+
         # Print configuration
         modules['print_configuration'](args)
-        
+
         # Validate arguments
         modules['validate_args'](args)
-        
+
         # Determine execution mode
         hyperopt_mode = modules['check_hyperparameter_optimization_mode'](args)
-        
+
         # Execute based on mode
         if hyperopt_mode == 'legacy':
             results = run_hyperparameter_optimization(args, modules)
         else:
             results = run_single_experiment(args, modules)
-        
-        print("\n🎉 AIMNet-X2D execution completed successfully!")
+
+        logger.info("AIMNet-X2D execution completed successfully!")
         return 0
-        
+
     except KeyboardInterrupt:
-        print("\n⚠️  Execution interrupted by user")
+        logger.warning("Execution interrupted by user")
         return 1
-        
+
     except Exception as e:
-        print(f"\n❌ Execution failed with error: {e}")
-        
+        logger.error(f"Execution failed with error: {e}")
+
         # Print detailed traceback in debug mode
         if os.environ.get('AIMNET_DEBUG', '').lower() in ('1', 'true', 'yes'):
             import traceback
             traceback.print_exc()
         else:
-            print("\nFor detailed error information, set AIMNET_DEBUG=1")
-        
+            logger.info("For detailed error information, set AIMNET_DEBUG=1")
+
         return 1
 
 

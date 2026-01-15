@@ -6,28 +6,33 @@ from dataclasses import dataclass
 from typing import Optional
 from pathlib import Path
 
+from datasets.constants import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_MC_DROPOUT_RATE,
+)
+
 
 @dataclass
 class InferenceConfig:
     """Configuration for inference pipeline."""
-    
+
     # Input/Output
     input_path: str
     output_path: str
     smiles_column: str = "smiles"
-    
+
     # Model settings
     model_path: str = None
     batch_size: int = 64
     max_hops: int = None  # Will be set from model
-    
+
     # Processing settings
-    chunk_size: int = 1000
+    chunk_size: int = DEFAULT_CHUNK_SIZE
     num_workers: int = 4
-    
+
     # Uncertainty estimation
     mc_samples: int = 0
-    mc_dropout_rate: float = 0.1
+    mc_dropout_rate: float = DEFAULT_MC_DROPOUT_RATE
     
     # Embeddings
     save_embeddings: bool = False

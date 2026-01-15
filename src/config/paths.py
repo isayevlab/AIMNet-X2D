@@ -42,7 +42,7 @@ def setup_paths(args) -> None:
         print("✅ Path setup completed successfully")
         
     except Exception as e:
-        raise PathError(f"Failed to setup paths: {e}")
+        raise PathError(f"Failed to setup paths: {e}") from e
 
 
 def _create_output_directories(args) -> None:
@@ -69,7 +69,7 @@ def _create_output_directories(args) -> None:
                 parent_dir = Path(file_path).parent
                 create_directories([str(parent_dir)])
             except Exception as e:
-                raise PathError(f"Failed to create directory for {file_path}: {e}")
+                raise PathError(f"Failed to create directory for {file_path}: {e}") from e
 
 
 def _create_hdf5_directories(args) -> None:
@@ -91,7 +91,7 @@ def _create_hdf5_directories(args) -> None:
                 os.makedirs(dirname, exist_ok=True)
                 print(f"  📁 Created HDF5 directory: {dirname}")
         except Exception as e:
-            raise PathError(f"Failed to create HDF5 directory for {path}: {e}")
+            raise PathError(f"Failed to create HDF5 directory for {path}: {e}") from e
 
 
 def _validate_input_paths(args) -> None:
@@ -162,9 +162,9 @@ def create_directories(dir_paths: List[str]) -> None:
         except PermissionError:
             raise PathError(f"Permission denied creating directory: {dir_path}")
         except OSError as e:
-            raise PathError(f"OS error creating directory {dir_path}: {e}")
+            raise PathError(f"OS error creating directory {dir_path}: {e}") from e
         except Exception as e:
-            raise PathError(f"Unexpected error creating directory {dir_path}: {e}")
+            raise PathError(f"Unexpected error creating directory {dir_path}: {e}") from e
 
 
 def ensure_path_exists(file_path: str, create_parents: bool = True) -> bool:
@@ -204,12 +204,12 @@ def ensure_path_exists(file_path: str, create_parents: bool = True) -> bool:
         except PermissionError:
             raise PathError(f"Cannot write to path: {file_path}")
         except OSError as e:
-            raise PathError(f"OS error accessing path {file_path}: {e}")
-            
+            raise PathError(f"OS error accessing path {file_path}: {e}") from e
+
     except PathError:
         raise
     except Exception as e:
-        raise PathError(f"Unexpected error checking path {file_path}: {e}")
+        raise PathError(f"Unexpected error checking path {file_path}: {e}") from e
 
 
 def get_default_paths(base_dir: str = ".") -> Dict[str, str]:
@@ -246,7 +246,7 @@ def get_default_paths(base_dir: str = ".") -> Dict[str, str]:
         }
         
     except Exception as e:
-        raise PathError(f"Failed to generate default paths: {e}")
+        raise PathError(f"Failed to generate default paths: {e}") from e
 
 
 def check_disk_space(path: str, required_gb: float = 1.0) -> bool:
@@ -283,7 +283,7 @@ def check_disk_space(path: str, required_gb: float = 1.0) -> bool:
         return True
         
     except Exception as e:
-        raise PathError(f"Failed to check disk space for {path}: {e}")
+        raise PathError(f"Failed to check disk space for {path}: {e}") from e
 
 
 def backup_file(file_path: str, backup_suffix: str = ".backup") -> Optional[str]:
@@ -321,7 +321,7 @@ def backup_file(file_path: str, backup_suffix: str = ".backup") -> Optional[str]
         return str(backup_path)
         
     except Exception as e:
-        raise PathError(f"Failed to create backup of {file_path}: {e}")
+        raise PathError(f"Failed to create backup of {file_path}: {e}") from e
 
 
 def clean_old_files(directory: str, pattern: str = "*", max_age_days: int = 30) -> int:
@@ -405,7 +405,7 @@ def get_file_info(file_path: str) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        raise PathError(f"Failed to get file info for {file_path}: {e}")
+        raise PathError(f"Failed to get file info for {file_path}: {e}") from e
 
 
 # Legacy compatibility function

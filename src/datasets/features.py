@@ -30,7 +30,7 @@ def partial_parse_atomic_numbers(smiles: str) -> np.ndarray or None:
         return None
     try:
         mol = Chem.AddHs(mol)
-    except:
+    except (ValueError, RuntimeError):
         return None
     nums = [atom.GetAtomicNum() for atom in mol.GetAtoms()]
     return np.array(nums, dtype=np.int32)

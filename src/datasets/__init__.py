@@ -7,7 +7,7 @@ Handles molecular data loading, preprocessing, feature computation, and batching
 """
 
 # Core data structures
-from .molecular import PyGSMILESDataset, HDF5MolecularIterableDataset, MyBatch
+from .molecular import PyGSMILESDataset, HDF5MolecularIterableDataset, MolecularBatch
 from .loaders import (
     create_pyg_dataloader,
     create_iterable_pyg_dataloader,
@@ -42,7 +42,7 @@ __all__ = [
     # Core datasets
     "PyGSMILESDataset",
     "HDF5MolecularIterableDataset", 
-    "MyBatch",
+    "MolecularBatch",
     
     # Data loaders
     "create_pyg_dataloader",

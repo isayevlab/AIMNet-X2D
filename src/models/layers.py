@@ -106,29 +106,6 @@ class ShellConvolutionLayer(nn.Module):
         x = x + global_skip
         
         return x
-        
-    # def message_passing(self, atom_features: torch.Tensor, target: torch.Tensor, src: torch.Tensor) -> List[torch.Tensor]:
-    #     """
-    #     Perform multi-hop message passing.
-        
-    #     Args:
-    #         atom_features: Input atom features
-    #         target: Target atom indices
-    #         src: Source atom indices
-            
-    #     Returns:
-    #         List of aggregated features for each hop
-    #     """
-    #     expanded_atom_features = atom_features.repeat(self.num_hops, 1)
-    #     aggregated = torch.zeros_like(expanded_atom_features)
-        
-    #     if target.numel() != 0:
-    #         source_features = expanded_atom_features[src]
-    #         aggregated.index_add_(0, target, source_features)
-            
-    #     chunks = torch.split(aggregated, atom_features.shape[0], dim=0)
-    #     return chunks
-
 
     def message_passing(self, atom_features: torch.Tensor, target: torch.Tensor, src: torch.Tensor) -> List[torch.Tensor]:
         """

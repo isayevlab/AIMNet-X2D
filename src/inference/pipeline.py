@@ -19,7 +19,8 @@ from .config import InferenceConfig
 from .preprocessing import PreprocessingReconstructor
 from .uncertainty import MCDropoutPredictor, DeterministicPredictor, UncertaintyEstimator
 from .embeddings import EmbeddingManager
-from datasets import _worker_process_smiles, MyBatch
+from datasets import _worker_process_smiles, MolecularBatch
+from datasets.constants import DEFAULT_MOLECULE_ESTIMATE, DDP_SYNC_DELAY
 from torch_geometric.data import Data
 from models import GNN
 from utils.distributed import safe_get_rank, is_main_process
@@ -334,7 +335,7 @@ class InferencePipeline:
             if unexpected_keys:
                 raise ValueError(f"Unexpected keys in state dict: {unexpected_keys}")
         except Exception as e:
-            raise ValueError(f"Failed to load model state dict: {e}")
+            raise ValueError(f"Failed to load model state dict: {e}") from e
         
         model.eval()
         
@@ -357,7 +358,7 @@ class InferencePipeline:
             print(f"[Model] ✅ Model validation passed")
             
         except AssertionError as e:
-            raise ValueError(f"Model validation failed: {e}")
+            raise ValueError(f"Model validation failed: {e}") from e
 
     def _get_output_dim_from_state_dict(self, state_dict: Dict[str, Any], hyperparams: Dict[str, Any]) -> int:
         """Determine output dimension from state dict."""
@@ -389,9 +390,9 @@ class InferencePipeline:
                     return sum(1 for _ in f) - 1  # Subtract header
             else:
                 # Default estimate for other formats
-                return 10000
-        except:
-            return 10000
+                return DEFAULT_MOLECULE_ESTIMATE
+        except (OSError, IOError):
+            return DEFAULT_MOLECULE_ESTIMATE
     
     def run_streaming_inference(self) -> None:
         """Run streaming inference on CSV input."""
@@ -504,7 +505,7 @@ class InferencePipeline:
                         header.append('row_id')  # Auto-generated
                 else:
                     header.append('row_id')  # Fallback
-        except:
+        except (OSError, KeyError, TypeError):
             header.append('row_id')  # Fallback on error
                 
         # Get target column names from saved model
@@ -520,7 +521,7 @@ class InferencePipeline:
                     hyperparams = model_artifact['hyperparams']
                     target_column_name = hyperparams.get('target_column_name', 'target')
                     multi_target_names = hyperparams.get('multi_target_column_names', None)
-            except:
+            except (OSError, RuntimeError, KeyError):
                 pass  # Use defaults
         
         # Determine number of output dimensions and column names
@@ -779,7 +780,7 @@ class InferencePipeline:
             data_objects,
             batch_size=self.config.batch_size,
             shuffle=False,
-            collate_fn=MyBatch.from_data_list,
+            collate_fn=MolecularBatch.from_data_list,
             num_workers=0  # No multiprocessing in DataLoader for inference
         )
     
@@ -1018,9 +1019,8 @@ class InferencePipeline:
         finally:
             if dist.is_available() and dist.is_initialized():
                 try:
-                    import time
-                    time.sleep(0.1)
-                except:
+                    time.sleep(DDP_SYNC_DELAY)
+                except (InterruptedError, KeyboardInterrupt):
                     pass
 
 

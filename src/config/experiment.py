@@ -56,9 +56,9 @@ def save_experiment_config(args: argparse.Namespace, filepath: Optional[str] = N
             with open(filepath, 'w') as f:
                 yaml.dump(config, f, default_flow_style=False, sort_keys=True)
         except IOError as e:
-            raise ExperimentError(f"Failed to write config file {filepath}: {e}")
+            raise ExperimentError(f"Failed to write config file {filepath}: {e}") from e
         except yaml.YAMLError as e:
-            raise ExperimentError(f"Failed to serialize config to YAML: {e}")
+            raise ExperimentError(f"Failed to serialize config to YAML: {e}") from e
         
         print(f"✅ Experiment configuration saved to {filepath}")
         return filepath
@@ -66,7 +66,7 @@ def save_experiment_config(args: argparse.Namespace, filepath: Optional[str] = N
     except ExperimentError:
         raise
     except Exception as e:
-        raise ExperimentError(f"Unexpected error saving experiment config: {e}")
+        raise ExperimentError(f"Unexpected error saving experiment config: {e}") from e
 
 
 def load_experiment_config(filepath: str) -> argparse.Namespace:
@@ -91,9 +91,9 @@ def load_experiment_config(filepath: str) -> argparse.Namespace:
             with open(filepath, 'r') as f:
                 config = yaml.safe_load(f)
         except IOError as e:
-            raise ExperimentError(f"Failed to read config file {filepath}: {e}")
+            raise ExperimentError(f"Failed to read config file {filepath}: {e}") from e
         except yaml.YAMLError as e:
-            raise ExperimentError(f"Failed to parse YAML config: {e}")
+            raise ExperimentError(f"Failed to parse YAML config: {e}") from e
         
         if not isinstance(config, dict):
             raise ExperimentError(f"Invalid config format in {filepath}: expected dictionary")
@@ -110,7 +110,7 @@ def load_experiment_config(filepath: str) -> argparse.Namespace:
     except ExperimentError:
         raise
     except Exception as e:
-        raise ExperimentError(f"Unexpected error loading experiment config: {e}")
+        raise ExperimentError(f"Unexpected error loading experiment config: {e}") from e
 
 
 def create_experiment_metadata(args: argparse.Namespace) -> Dict[str, Any]:
@@ -169,9 +169,9 @@ def create_experiment_metadata(args: argparse.Namespace) -> Dict[str, Any]:
         }
         
         return metadata
-        
+
     except Exception as e:
-        raise ExperimentError(f"Failed to create experiment metadata: {e}")
+        raise ExperimentError(f"Failed to create experiment metadata: {e}") from e
 
 
 def save_experiment_results(results: Dict[str, Any], filepath: str) -> None:
@@ -206,21 +206,21 @@ def save_experiment_results(results: Dict[str, Any], filepath: str) -> None:
                 with open(filepath, 'w') as f:
                     json.dump(results_with_metadata, f, indent=2, default=str)
             except (IOError, TypeError) as e:
-                raise ExperimentError(f"Failed to save results as JSON: {e}")
+                raise ExperimentError(f"Failed to save results as JSON: {e}") from e
         else:
             # Default to YAML
             try:
                 with open(filepath, 'w') as f:
                     yaml.dump(results_with_metadata, f, default_flow_style=False)
             except (IOError, yaml.YAMLError) as e:
-                raise ExperimentError(f"Failed to save results as YAML: {e}")
+                raise ExperimentError(f"Failed to save results as YAML: {e}") from e
         
         print(f"✅ Experiment results saved to {filepath}")
         
     except ExperimentError:
         raise
     except Exception as e:
-        raise ExperimentError(f"Unexpected error saving experiment results: {e}")
+        raise ExperimentError(f"Unexpected error saving experiment results: {e}") from e
 
 
 def load_experiment_results(filepath: str) -> Dict[str, Any]:
@@ -246,14 +246,14 @@ def load_experiment_results(filepath: str) -> Dict[str, Any]:
                 with open(filepath, 'r') as f:
                     data = json.load(f)
             except (IOError, json.JSONDecodeError) as e:
-                raise ExperimentError(f"Failed to load JSON results: {e}")
+                raise ExperimentError(f"Failed to load JSON results: {e}") from e
         else:
             # Default to YAML
             try:
                 with open(filepath, 'r') as f:
                     data = yaml.safe_load(f)
             except (IOError, yaml.YAMLError) as e:
-                raise ExperimentError(f"Failed to load YAML results: {e}")
+                raise ExperimentError(f"Failed to load YAML results: {e}") from e
         
         # Extract results, handling both old and new formats
         if isinstance(data, dict) and 'results' in data:
@@ -264,7 +264,7 @@ def load_experiment_results(filepath: str) -> Dict[str, Any]:
     except ExperimentError:
         raise
     except Exception as e:
-        raise ExperimentError(f"Unexpected error loading experiment results: {e}")
+        raise ExperimentError(f"Unexpected error loading experiment results: {e}") from e
 
 
 def compare_experiment_configs(config1_path: str, config2_path: str) -> Dict[str, Any]:
@@ -311,9 +311,9 @@ def compare_experiment_configs(config1_path: str, config2_path: str) -> Dict[str
                 differences['same_values'][key] = dict1[key]
         
         return differences
-        
+
     except Exception as e:
-        raise ExperimentError(f"Failed to compare experiment configs: {e}")
+        raise ExperimentError(f"Failed to compare experiment configs: {e}") from e
 
 
 def _serialize_args(args: argparse.Namespace) -> Dict[str, Any]:

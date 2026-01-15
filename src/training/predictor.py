@@ -4,27 +4,30 @@ Prediction functionality for trained GNN models.
 This module contains functions for making predictions and uncertainty estimation.
 """
 
+from typing import Any, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 import numpy as np
 import tqdm
+from torch.utils.data import DataLoader
 
 from utils.distributed import safe_get_rank, gather_ndarray_to_rank0
 
 
 @torch.no_grad()
 def predict_gnn(
-    model,
-    data_loader,
-    device,
-    task_type='regression',
-    preprocessing_pipeline=None,
-    is_ddp=False,
-    show_progress=True,  # NEW parameter
-    progress_total=None  # NEW parameter
-):
+    model: nn.Module,
+    data_loader: DataLoader,
+    device: torch.device,
+    task_type: str = 'regression',
+    preprocessing_pipeline: Optional[Any] = None,
+    is_ddp: bool = False,
+    show_progress: bool = True,
+    progress_total: Optional[int] = None
+) -> Tuple[np.ndarray, List[str]]:
     """
     Returns predictions in CPU numpy form with optional progress bar.
     
@@ -47,7 +50,7 @@ def predict_gnn(
                 pbar = tqdm.tqdm(total=total, desc="Inference", unit="batch")
             else:
                 pbar = tqdm.tqdm(desc="Inference", unit="batch")
-        except:
+        except (TypeError, AttributeError):
             pbar = tqdm.tqdm(desc="Inference", unit="batch")
     else:
         pbar = None
@@ -119,14 +122,14 @@ def predict_gnn(
 
 @torch.no_grad()
 def predict_with_mc_dropout(
-    model,
-    data_loader,
-    device,
-    num_samples=30,
-    task_type='regression',
-    preprocessing_pipeline=None,
-    is_ddp=False
-):
+    model: nn.Module,
+    data_loader: DataLoader,
+    device: torch.device,
+    num_samples: int = 30,
+    task_type: str = 'regression',
+    preprocessing_pipeline: Optional[Any] = None,
+    is_ddp: bool = False
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Get predictions with uncertainty estimates using Monte Carlo Dropout.
     
@@ -156,7 +159,8 @@ def predict_with_mc_dropout(
     # FIXED: Calculate total operations for clearer progress tracking
     try:
         num_batches = len(data_loader)
-    except:
+    except TypeError:
+        # IterableDatasets don't support len()
         num_batches = None
     
     if num_batches is not None and is_main:

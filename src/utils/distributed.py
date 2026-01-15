@@ -3,10 +3,11 @@ Distributed training utilities for PyTorch DDP.
 """
 
 import pickle
+from typing import List, Any, Union
+
 import torch
 import torch.distributed as dist
 import numpy as np
-from typing import List, Any
 
 
 def is_main_process() -> bool:
@@ -46,7 +47,7 @@ def get_world_size() -> int:
         return 1
 
 
-def gather_ndarray_to_rank0(arr: np.ndarray, device: str = "cpu") -> np.ndarray:
+def gather_ndarray_to_rank0(arr: np.ndarray, device: Union[str, torch.device] = "cpu") -> np.ndarray:
     """
     Gather a NumPy array from all ranks onto rank 0.
     
@@ -95,7 +96,7 @@ def gather_ndarray_to_rank0(arr: np.ndarray, device: str = "cpu") -> np.ndarray:
         return np.array([], dtype=arr.dtype)
 
 
-def gather_strings_to_rank0(local_list: List[str], device: str = "cpu") -> List[str]:
+def gather_strings_to_rank0(local_list: List[str], device: Union[str, torch.device] = "cpu") -> List[str]:
     """
     Gather a list of strings from all ranks onto rank 0.
     

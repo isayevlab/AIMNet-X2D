@@ -6,27 +6,31 @@ This module contains functions for evaluating trained models and computing metri
 
 import math
 import pickle
+from typing import Dict, List, Optional, Tuple, Any, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from torch.utils.data import DataLoader
 
 from utils.distributed import safe_get_rank, gather_ndarray_to_rank0, gather_strings_to_rank0
 
+
 @torch.no_grad()
 def evaluate(
-    model, 
-    data_loader, 
-    criterion, 
-    device, 
-    task_type='regression',
-    mixed_precision=False,
-    num_tasks=1,
-    preprocessing_pipeline=None,
-    is_ddp=False
-):
+    model: nn.Module,
+    data_loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    task_type: str = 'regression',
+    mixed_precision: bool = False,
+    num_tasks: int = 1,
+    preprocessing_pipeline: Optional[Any] = None,
+    is_ddp: bool = False
+) -> Tuple[float, Dict[str, float], np.ndarray, np.ndarray, List[str]]:
     """
     Evaluate model on a given data loader.
     

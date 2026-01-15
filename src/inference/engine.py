@@ -9,6 +9,7 @@ from typing import Optional
 from .config import InferenceConfig
 from .pipeline import InferencePipeline
 from datasets import create_iterable_pyg_dataloader
+from datasets.constants import DEFAULT_SHUFFLE_BUFFER_SIZE
 from training import predict_gnn
 from utils.distributed import safe_get_rank, is_main_process
 
@@ -62,8 +63,8 @@ class InferenceEngine:
                     total_molecules = f['metadata'].attrs.get('num_samples', None)
                 if total_molecules is None and 'data' in f:
                     total_molecules = f['data'].shape[0]
-        except:
-            pass
+        except (OSError, KeyError):
+            pass  # File may not exist or have expected structure
         
         if is_main_process() and total_molecules:
             print(f"[Engine] Processing {total_molecules:,} molecules")
@@ -74,7 +75,7 @@ class InferenceEngine:
             batch_size=self.config.batch_size,
             shuffle=False,
             num_workers=self.config.num_workers,
-            shuffle_buffer_size=1000,
+            shuffle_buffer_size=DEFAULT_SHUFFLE_BUFFER_SIZE,
             ddp_enabled=self.config.ddp_enabled,
             rank=self.config.rank,
             world_size=self.config.world_size
@@ -348,7 +349,7 @@ class InferenceEngine:
             batch_size=self.config.batch_size,
             shuffle=False,
             num_workers=0,  # Single threaded for embeddings
-            shuffle_buffer_size=1000,
+            shuffle_buffer_size=DEFAULT_SHUFFLE_BUFFER_SIZE,
             ddp_enabled=False,
             rank=0,
             world_size=1

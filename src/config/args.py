@@ -33,7 +33,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         return parser
         
     except Exception as e:
-        raise ArgumentError(f"Failed to create argument parser: {e}")
+        raise ArgumentError(f"Failed to create argument parser: {e}") from e
 
 
 def _add_data_arguments(parser: argparse.ArgumentParser) -> None:
@@ -146,8 +146,8 @@ def _add_training_arguments(parser: argparse.ArgumentParser) -> None:
     training_group.add_argument("--task_type", type=str, default="regression",
                                choices=["regression", "multitask"],
                                help="Type of prediction task")
-    training_group.add_argument("--loss_function", type=str, default="l1", 
-                               choices=["l1", "mse"],
+    training_group.add_argument("--loss_function", type=str, default="l1",
+                               choices=["l1", "mse", "evidential"],
                                help="Loss function to use")
     training_group.add_argument("--multitask_weights", type=str, default=None,
                                help="Comma-separated weights for multitask learning")
@@ -295,7 +295,7 @@ def parse_arguments(args: Optional[list] = None) -> argparse.Namespace:
         raise
         
     except Exception as e:
-        raise ArgumentError(f"Unexpected error during argument parsing: {e}")
+        raise ArgumentError(f"Unexpected error during argument parsing: {e}") from e
 
 
 def print_arguments(args: argparse.Namespace) -> None:
@@ -390,4 +390,4 @@ def validate_argument_types(args: argparse.Namespace) -> None:
         if isinstance(e, ArgumentError):
             raise
         else:
-            raise ArgumentError(f"Unexpected error during argument validation: {e}")
+            raise ArgumentError(f"Unexpected error during argument validation: {e}") from e

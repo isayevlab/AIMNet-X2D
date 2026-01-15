@@ -14,6 +14,8 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 from torch_geometric.data import InMemoryDataset, Data, Batch
 
+from .constants import DEFAULT_SHUFFLE_BUFFER_SIZE, DEFAULT_RANDOM_SEED
+
 
 class PyGSMILESDataset(InMemoryDataset):
     """
@@ -121,13 +123,13 @@ class HDF5MolecularIterableDataset(torch.utils.data.IterableDataset):
     def __init__(self,
                  hdf5_path: str,
                  shuffle: bool = False,
-                 buffer_size: int = 1000,
+                 buffer_size: int = DEFAULT_SHUFFLE_BUFFER_SIZE,
                  ddp_enabled: bool = False,
                  rank: int = 0,
                  world_size: int = 1,
                  fold_indices: List[int] = None,
                  cv_fold: int = None,
-                 seed: int = 42,
+                 seed: int = DEFAULT_RANDOM_SEED,
                  preprocessing_pipeline = None):
         super().__init__()
         self.hdf5_path = hdf5_path
@@ -329,7 +331,7 @@ class HDF5MolecularIterableDataset(torch.utils.data.IterableDataset):
         return data_obj
 
 
-class MyBatch(Batch):
+class MolecularBatch(Batch):
     """
     Custom Batch class for molecular graphs.
     

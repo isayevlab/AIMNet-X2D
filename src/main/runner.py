@@ -145,13 +145,13 @@ def main_runner(args) -> Dict[str, Any]:
             print(f"[Runner] Rank {local_rank}: Final cleanup...")
             try:
                 dist.barrier(timeout=10)
-            except:
-                pass  # Timeout is OK here
-            
+            except (RuntimeError, TimeoutError):
+                pass  # Timeout or already destroyed is OK here
+
             try:
                 dist.destroy_process_group()
                 print(f"[Runner] Rank {local_rank}: Cleanup complete")
-            except:
+            except RuntimeError:
                 pass  # Already destroyed is OK
 
 def _run_inference_mode(args, device, is_ddp, local_rank, world_size) -> Dict[str, Any]:
@@ -171,10 +171,10 @@ def _run_inference_mode(args, device, is_ddp, local_rank, world_size) -> Dict[st
                     total_molecules = f['metadata'].attrs['num_samples']
                 elif 'data' in f:
                     total_molecules = f['data'].shape[0]
-            
+
             if is_main_process() and total_molecules:
-                print(f"📊 Processing {total_molecules:,} molecules from HDF5")
-        except:
+                print(f"Processing {total_molecules:,} molecules from HDF5")
+        except (OSError, KeyError):
             pass  # Will just not show progress bar
     
     # Run inference with progress tracking

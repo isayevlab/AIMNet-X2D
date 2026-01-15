@@ -4,7 +4,7 @@ Data loader creation and collate functions for molecular datasets.
 """
 
 from torch.utils.data import DataLoader
-from .molecular import PyGSMILESDataset, HDF5MolecularIterableDataset, MyBatch
+from .molecular import PyGSMILESDataset, HDF5MolecularIterableDataset, MolecularBatch
 
 
 def iterable_collate_fn(batch_list):
@@ -12,7 +12,7 @@ def iterable_collate_fn(batch_list):
     filtered = [b for b in batch_list if b is not None]
     if len(filtered) == 0:
         return None
-    return MyBatch.from_data_list(filtered)
+    return MolecularBatch.from_data_list(filtered)
 
 
 def create_pyg_dataloader(
@@ -40,7 +40,7 @@ def create_pyg_dataloader(
         batch_size=batch_size,
         shuffle=(sampler is None and shuffle),
         num_workers=num_workers,
-        collate_fn=MyBatch.from_data_list,
+        collate_fn=MolecularBatch.from_data_list,
         sampler=sampler
     )
 
