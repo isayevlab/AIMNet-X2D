@@ -9,6 +9,7 @@ Provides streaming inference, uncertainty estimation, and embedding extraction.
 from .engine import InferenceEngine
 from .pipeline import InferencePipeline
 from .config import InferenceConfig
+from .model_loader import ModelLoader
 from .uncertainty import MCDropoutPredictor, UncertaintyEstimator
 from .embeddings import EmbeddingExtractor, StreamingEmbeddingWriter
 from .preprocessing import PreprocessingReconstructor
@@ -19,20 +20,21 @@ from .engine import inference_main
 __all__ = [
     # Main interfaces
     "InferenceEngine",
-    "InferencePipeline", 
+    "InferencePipeline",
     "InferenceConfig",
-    
+    "ModelLoader",
+
     # Uncertainty estimation
     "MCDropoutPredictor",
     "UncertaintyEstimator",
-    
+
     # Embeddings
     "EmbeddingExtractor",
     "StreamingEmbeddingWriter",
-    
+
     # Preprocessing
     "PreprocessingReconstructor",
-    
+
     # Legacy
     "inference_main",
 ]
