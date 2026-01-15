@@ -6,11 +6,13 @@ optimized for batch processing on GPU.
 """
 
 from .batch import MolecularGraphBatch
+from .model_config import ModelConfig
 from .preprocessing import SAETransform, StandardScaler, PreprocessingPipeline
 from .featurizer import BatchFeaturizer
 
 __all__ = [
     "MolecularGraphBatch",
+    "ModelConfig",
     "SAETransform",
     "StandardScaler",
     "PreprocessingPipeline",
