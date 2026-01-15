@@ -94,3 +94,25 @@ class TestBatchFeaturizer:
 
         with pytest.raises(ValueError, match="No valid molecules"):
             featurizer.featurize(smiles, targets)
+
+
+def test_stack_batch_produces_contiguous_tensors():
+    """Test that batch construction produces contiguous tensors."""
+    from src.core.featurizer import BatchFeaturizer
+    import numpy as np
+
+    featurizer = BatchFeaturizer(num_hops=3, num_workers=1)
+
+    smiles = ["C", "CC", "CCC", "CCCC", "CCCCC"]
+    targets = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+
+    batch = featurizer.featurize(smiles, targets)
+
+    # All tensors should be contiguous for optimal GPU performance
+    assert batch.atom_types.is_contiguous(), "atom_types not contiguous"
+    assert batch.batch_idx.is_contiguous(), "batch_idx not contiguous"
+    assert batch.degrees.is_contiguous(), "degrees not contiguous"
+    assert batch.hybridizations.is_contiguous(), "hybridizations not contiguous"
+    assert batch.hydrogen_counts.is_contiguous(), "hydrogen_counts not contiguous"
+    assert batch.atomic_numbers.is_contiguous(), "atomic_numbers not contiguous"
+    assert batch.targets.is_contiguous(), "targets not contiguous"

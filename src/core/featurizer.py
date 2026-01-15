@@ -177,40 +177,47 @@ class BatchFeaturizer:
         molecules: list[dict[str, Any]],
         targets: np.ndarray,
     ) -> MolecularGraphBatch:
-        """Stack molecule data into batch tensors."""
+        """Stack molecule data into batch tensors with optimized allocation."""
         num_molecules = len(molecules)
 
+        # Pre-compute sizes for single allocation
         atom_counts = [len(m["atom_types"]) for m in molecules]
-        ptr = torch.tensor([0] + list(np.cumsum(atom_counts)), dtype=torch.int64)
-        total_atoms = ptr[-1].item()
+        total_atoms = sum(atom_counts)
 
-        atom_types = torch.zeros(total_atoms, dtype=torch.int32)
-        degrees = torch.zeros(total_atoms, dtype=torch.int32)
-        hybridizations = torch.zeros(total_atoms, dtype=torch.int32)
-        hydrogen_counts = torch.zeros(total_atoms, dtype=torch.int32)
-        atomic_numbers = torch.zeros(total_atoms, dtype=torch.int64)
-        batch_idx = torch.zeros(total_atoms, dtype=torch.int64)
+        # Build ptr tensor
+        ptr = torch.zeros(num_molecules + 1, dtype=torch.int64)
+        ptr[1:] = torch.tensor(atom_counts).cumsum(0)
 
+        # Pre-allocate all atom tensors contiguously
+        atom_types = torch.empty(total_atoms, dtype=torch.int32)
+        degrees = torch.empty(total_atoms, dtype=torch.int32)
+        hybridizations = torch.empty(total_atoms, dtype=torch.int32)
+        hydrogen_counts = torch.empty(total_atoms, dtype=torch.int32)
+        atomic_numbers = torch.empty(total_atoms, dtype=torch.int64)
+        batch_idx = torch.empty(total_atoms, dtype=torch.int64)
+
+        # Pre-allocate edge lists
         hop_edges_lists: list[list[torch.Tensor]] = [[] for _ in range(self.num_hops)]
-        chiral_indices_list = []
-        cis_indices_list = []
-        trans_indices_list = []
+        chiral_indices_list: list[list[int]] = []
+        cis_indices_list: list[list[int]] = []
+        trans_indices_list: list[list[int]] = []
+        total_charges = torch.empty(num_molecules, dtype=torch.float32)
+        smiles_list: list[str] = []
 
-        total_charges = []
-        smiles_list = []
-
+        # Fill tensors
         for mol_idx, mol in enumerate(molecules):
             start = ptr[mol_idx].item()
             end = ptr[mol_idx + 1].item()
+
+            # Use copy_ for efficient in-place assignment
+            atom_types[start:end].copy_(torch.from_numpy(mol["atom_types"]))
+            degrees[start:end].copy_(torch.from_numpy(mol["degrees"]))
+            hybridizations[start:end].copy_(torch.from_numpy(mol["hybridizations"]))
+            hydrogen_counts[start:end].copy_(torch.from_numpy(mol["hydrogen_counts"]))
+            atomic_numbers[start:end].copy_(torch.from_numpy(mol["atomic_numbers"]))
+            batch_idx[start:end].fill_(mol_idx)
+
             offset = start
-
-            atom_types[start:end] = torch.from_numpy(mol["atom_types"])
-            degrees[start:end] = torch.from_numpy(mol["degrees"])
-            hybridizations[start:end] = torch.from_numpy(mol["hybridizations"])
-            hydrogen_counts[start:end] = torch.from_numpy(mol["hydrogen_counts"])
-            atomic_numbers[start:end] = torch.from_numpy(mol["atomic_numbers"])
-            batch_idx[start:end] = mol_idx
-
             for hop_idx, edges in enumerate(mol["multi_hop_edges"]):
                 if edges.size > 0:
                     edges_tensor = torch.from_numpy(edges).long() + offset
@@ -223,43 +230,45 @@ class BatchFeaturizer:
             for trans in mol["trans_bonds"]:
                 trans_indices_list.append([c + offset for c in trans])
 
-            total_charges.append(mol["total_charge"])
+            total_charges[mol_idx] = mol["total_charge"]
             smiles_list.append(mol["smiles"])
 
+        # Build edge index tensors (ensure contiguous)
         edge_indices = []
         for hop_edges in hop_edges_lists:
             if hop_edges:
-                edge_indices.append(torch.cat(hop_edges, dim=1))
+                edge_indices.append(torch.cat(hop_edges, dim=1).contiguous())
             else:
                 edge_indices.append(torch.zeros((2, 0), dtype=torch.int64))
 
+        # Build stereochemistry tensors (ensure contiguous)
         chiral_indices = (
-            torch.tensor(chiral_indices_list, dtype=torch.int64)
+            torch.tensor(chiral_indices_list, dtype=torch.int64).contiguous()
             if chiral_indices_list
             else torch.zeros((0, 4), dtype=torch.int64)
         )
         cis_indices = (
-            torch.tensor(cis_indices_list, dtype=torch.int64)
+            torch.tensor(cis_indices_list, dtype=torch.int64).contiguous()
             if cis_indices_list
             else torch.zeros((0, 4), dtype=torch.int64)
         )
         trans_indices = (
-            torch.tensor(trans_indices_list, dtype=torch.int64)
+            torch.tensor(trans_indices_list, dtype=torch.int64).contiguous()
             if trans_indices_list
             else torch.zeros((0, 4), dtype=torch.int64)
         )
 
         return MolecularGraphBatch(
-            atom_types=atom_types,
-            degrees=degrees,
-            hybridizations=hybridizations,
-            hydrogen_counts=hydrogen_counts,
-            atomic_numbers=atomic_numbers,
-            batch_idx=batch_idx,
-            ptr=ptr,
+            atom_types=atom_types.contiguous(),
+            degrees=degrees.contiguous(),
+            hybridizations=hybridizations.contiguous(),
+            hydrogen_counts=hydrogen_counts.contiguous(),
+            atomic_numbers=atomic_numbers.contiguous(),
+            batch_idx=batch_idx.contiguous(),
+            ptr=ptr.contiguous(),
             edge_indices=edge_indices,
-            targets=torch.from_numpy(targets).float(),
-            total_charges=torch.tensor(total_charges, dtype=torch.float32),
+            targets=torch.from_numpy(targets).float().contiguous(),
+            total_charges=total_charges.contiguous(),
             smiles=smiles_list,
             chiral_indices=chiral_indices,
             cis_bond_indices=cis_indices,
