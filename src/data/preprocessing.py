@@ -13,6 +13,9 @@ from dataclasses import dataclass
 
 # Import from your existing modules
 from datasets import partial_parse_atomic_numbers, compute_sae_dict_from_atomic_numbers_list
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -52,7 +55,7 @@ class SAENormalizer:
         Returns:
             Dictionary of SAE statistics
         """
-        print(f"[SAE] Computing statistics from {len(train_smiles)} training molecules only")
+        logger.info(f"Computing SAE statistics from {len(train_smiles)} training molecules only")
         
         if self.task_type == "regression":
             self.sae_statistics = self._fit_single_task(train_smiles, train_targets)
@@ -68,7 +71,7 @@ class SAENormalizer:
     
     def _fit_single_task(self, smiles_list: List[str], targets: List[float]) -> Dict:
         """Fit SAE for single-task regression."""
-        print("[SAE] Single-task regression mode")
+        logger.info("SAE single-task regression mode")
         
         # Parse atomic numbers for training data only
         train_nums = []
@@ -85,7 +88,7 @@ class SAENormalizer:
         if len(train_nums) == 0:
             raise ValueError("No valid molecules found for SAE computation")
         
-        print(f"[SAE] Using {len(train_nums)}/{len(smiles_list)} valid molecules")
+        logger.info(f"SAE using {len(train_nums)}/{len(smiles_list)} valid molecules")
         
         # Compute SAE dictionary
         sae_dict = compute_sae_dict_from_atomic_numbers_list(
@@ -99,7 +102,7 @@ class SAENormalizer:
                       targets: List[List[float]], 
                       subtasks: List[int]) -> Dict:
         """Fit SAE for multitask regression."""
-        print(f"[SAE] Multitask mode for subtasks: {subtasks}")
+        logger.info(f"SAE multitask mode for subtasks: {subtasks}")
         
         # Parse atomic numbers for training set only
         train_atomic_nums = []
@@ -115,7 +118,7 @@ class SAENormalizer:
             if subtask_idx >= train_array.shape[1]:
                 raise ValueError(f"Subtask index {subtask_idx} >= number of targets {train_array.shape[1]}")
             
-            print(f"[SAE] Computing for subtask {subtask_idx}")
+            logger.debug(f"SAE computing for subtask {subtask_idx}")
             
             # Collect data for current subtask (training only)
             subtask_targets = []
@@ -127,7 +130,7 @@ class SAENormalizer:
                     subtask_nums.append(nums)
             
             if len(subtask_nums) == 0:
-                print(f"[SAE] WARNING: No valid molecules for subtask {subtask_idx}")
+                logger.warning(f"SAE: No valid molecules for subtask {subtask_idx}")
                 continue
             
             # Compute SAE dictionary for this subtask
@@ -136,7 +139,7 @@ class SAENormalizer:
             )
             
             sae_statistics[subtask_idx] = sae_dict
-            print(f"[SAE] Subtask {subtask_idx}: {len(sae_dict)} atomic contributions computed")
+            logger.info(f"SAE subtask {subtask_idx}: {len(sae_dict)} atomic contributions computed")
         
         return sae_statistics
     
@@ -299,7 +302,7 @@ class StandardScaler:
         Args:
             train_targets: Training target values (post-SAE if applicable)
         """
-        print(f"[Scaling] Computing statistics from {len(train_targets)} training samples")
+        logger.info(f"Computing scaling statistics from {len(train_targets)} training samples")
         
         # Convert to numpy array
         target_array = np.array(train_targets, dtype=np.float32)
@@ -315,8 +318,8 @@ class StandardScaler:
         
         self.is_fitted = True
         
-        print(f"[Scaling] Means: {self.means}")
-        print(f"[Scaling] Stds: {self.stds}")
+        logger.debug(f"Scaling means: {self.means}")
+        logger.debug(f"Scaling stds: {self.stds}")
     
     def transform(self, targets: Union[List[float], List[List[float]]]) -> np.ndarray:
         """Apply scaling using pre-computed statistics."""
@@ -364,13 +367,13 @@ class PreprocessingPipeline:
             train_smiles: Training SMILES strings
             train_targets: Training target values
         """
-        print(f"[Pipeline] Fitting preprocessing on {len(train_smiles)} training samples")
+        logger.info(f"Fitting preprocessing pipeline on {len(train_smiles)} training samples")
         
         current_targets = train_targets
         
         # Step 1: SAE normalization (if enabled)
         if self.config.apply_sae:
-            print("[Pipeline] Step 1: SAE normalization")
+            logger.info("Pipeline step 1: SAE normalization")
             self.sae_normalizer = SAENormalizer(
                 task_type=self.config.task_type,
                 percentile_cutoff=self.config.sae_percentile_cutoff
@@ -381,12 +384,12 @@ class PreprocessingPipeline:
         
         # Step 2: Standard scaling (if enabled)
         if self.config.apply_standard_scaling:
-            print("[Pipeline] Step 2: Standard scaling")
+            logger.info("Pipeline step 2: Standard scaling")
             self.standard_scaler = StandardScaler()
             self.standard_scaler.fit(current_targets)
         
         self.is_fitted = True
-        print("[Pipeline] Fitting complete")
+        logger.info("Pipeline fitting complete")
     
     def transform(self, 
                   smiles_list: List[str], 
@@ -493,9 +496,9 @@ def preprocess_molecular_data(
         Tuple of ((train_targets, train_smiles), (val_targets, val_smiles), 
                  (test_targets, test_smiles), pipeline)
     """
-    print("="*60)
-    print("MOLECULAR DATA PREPROCESSING")
-    print("="*60)
+    logger.info("=" * 60)
+    logger.info("MOLECULAR DATA PREPROCESSING")
+    logger.info("=" * 60)
     
     # Create and fit pipeline on training data only
     pipeline = PreprocessingPipeline(config)
@@ -506,8 +509,8 @@ def preprocess_molecular_data(
     processed_val = pipeline.transform(val_smiles, val_targets, return_numpy=False)
     processed_test = pipeline.transform(test_smiles, test_targets, return_numpy=False)
     
-    print(f"✓ Processed {len(train_smiles)} train, {len(val_smiles)} val, {len(test_smiles)} test samples")
-    print("="*60)
+    logger.info(f"Processed {len(train_smiles)} train, {len(val_smiles)} val, {len(test_smiles)} test samples")
+    logger.info("=" * 60)
     
     return (
         (processed_train, train_smiles),

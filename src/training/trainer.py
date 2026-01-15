@@ -16,8 +16,11 @@ import tqdm
 import wandb
 
 from utils import get_layer_wise_learning_rates, is_main_process, safe_get_rank
+from utils.logging import get_logger
 from models import WeightedL1Loss, WeightedMSELoss, EvidentialLoss, WeightedEvidentialLoss
 from .evaluator import evaluate
+
+logger = get_logger(__name__)
 
 
 
@@ -29,7 +32,7 @@ def _setup_loss_function(current_args, task_type, multitask_weights):
             w_tensor = torch.tensor(multitask_weights, dtype=torch.float)
             criterion = WeightedL1Loss(w_tensor)
             if safe_get_rank() == 0:
-                print(f"Using WeightedL1Loss for multitask with weights = {multitask_weights}")
+                logger.info(f"Using WeightedL1Loss for multitask with weights = {multitask_weights}")
         elif task_type == 'regression':
             criterion = nn.L1Loss()
     elif current_args.loss_function == 'mse':
@@ -37,7 +40,7 @@ def _setup_loss_function(current_args, task_type, multitask_weights):
             w_tensor = torch.tensor(multitask_weights, dtype=torch.float)
             criterion = WeightedMSELoss(w_tensor)
             if safe_get_rank() == 0:
-                print(f"Using WeightedMSELoss for multitask with weights = {multitask_weights}")
+                logger.info(f"Using WeightedMSELoss for multitask with weights = {multitask_weights}")
         elif task_type == 'regression':
             criterion = nn.MSELoss()
     elif current_args.loss_function == 'evidential':
@@ -46,11 +49,11 @@ def _setup_loss_function(current_args, task_type, multitask_weights):
             w_tensor = torch.tensor(multitask_weights, dtype=torch.float)
             criterion = WeightedEvidentialLoss(w_tensor, lambda_reg=lambda_reg)
             if safe_get_rank() == 0:
-                print(f"Using WeightedEvidentialLoss for multitask with weights = {multitask_weights}, lambda = {lambda_reg}")
+                logger.info(f"Using WeightedEvidentialLoss for multitask with weights = {multitask_weights}, lambda = {lambda_reg}")
         elif task_type == 'regression':
             criterion = EvidentialLoss(lambda_reg=lambda_reg)
             if safe_get_rank() == 0:
-                print(f"Using EvidentialLoss for regression with lambda = {lambda_reg}")
+                logger.info(f"Using EvidentialLoss for regression with lambda = {lambda_reg}")
     else:
         raise ValueError(f"Invalid loss function: {current_args.loss_function}")
     
@@ -158,7 +161,7 @@ def _training_epoch(model, train_loader, optimizer, criterion, device, scaler, e
                 trans_indices
             )
             if torch.isnan(outputs).any():
-                print("NaN found in outputs!")
+                logger.warning("NaN found in outputs!")
             loss = criterion(outputs, targets)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -299,14 +302,14 @@ def train_gnn(
 
         if stop_training:
             if is_main_process():
-                print(f"Early stopping triggered at epoch {epoch + 1}")
-                print(f"Best validation loss: {best_val_loss:.6f} at epoch {best_epoch}")
+                logger.info(f"Early stopping triggered at epoch {epoch + 1}")
+                logger.info(f"Best validation loss: {best_val_loss:.6f} at epoch {best_epoch}")
             break
 
     # FIXED: Load best model if early stopping was used
     if early_stopping and best_model_state is not None:
         if is_main_process():
-            print(f"Loading best model from epoch {best_epoch}")
+            logger.info(f"Loading best model from epoch {best_epoch}")
         
         if isinstance(model, torch.nn.parallel.DistributedDataParallel):
             model.module.load_state_dict(best_model_state)
@@ -322,7 +325,7 @@ def train_gnn(
     if len(epoch_times) > 0:
         avg_epoch_time = sum(epoch_times) / len(epoch_times)
         if is_main_process():
-            print(f"Average epoch time: {avg_epoch_time:.2f} seconds")
+            logger.info(f"Average epoch time: {avg_epoch_time:.2f} seconds")
 
     if best_metrics is not None and is_main_process():
         if current_args.enable_wandb:
@@ -375,13 +378,13 @@ def _handle_epoch_end_fixed(
             }
             
             if is_main_process():
-                print(f"✓ New best model at epoch {best_epoch}: val_loss = {best_val_loss:.6f}")
-                
+                logger.info(f"New best model at epoch {best_epoch}: val_loss = {best_val_loss:.6f}")
+
         else:
             # No improvement
             patience_counter += 1
             if is_main_process():
-                print(f"No improvement for {patience_counter}/{patience} epochs")
+                logger.debug(f"No improvement for {patience_counter}/{patience} epochs")
 
         # Log current epoch metrics
         _print_epoch_progress(epoch, val_metrics, epoch_train_loss, optimizer, task_type)
@@ -424,8 +427,8 @@ def _handle_epoch_end_fixed(
         # Check early stopping condition
         if early_stopping and patience_counter >= patience:
             if is_main_process():
-                print(f"🛑 Early stopping triggered! No improvement for {patience} epochs.")
-                print(f"Best validation loss: {best_val_loss:.6f} at epoch {best_epoch}")
+                logger.info(f"Early stopping triggered! No improvement for {patience} epochs.")
+                logger.info(f"Best validation loss: {best_val_loss:.6f} at epoch {best_epoch}")
             stop_training = True
 
     # Broadcast early stopping decision to all processes (for DDP)
@@ -455,8 +458,8 @@ def _handle_epoch_end_fixed(
 def _print_epoch_progress(epoch, val_metrics, epoch_train_loss, optimizer, task_type):
     """Print training progress for the current epoch."""
     if task_type == 'multitask':
-        print(f"\nEpoch {epoch+1} | LR: {optimizer.param_groups[0]['lr']:.8f}")
-        print(f"[Train Loss: {epoch_train_loss:.5f}] "
+        logger.info(f"Epoch {epoch+1} | LR: {optimizer.param_groups[0]['lr']:.8f}")
+        logger.info(f"[Train Loss: {epoch_train_loss:.5f}] "
               f"Val Loss: {val_metrics['loss']:.5f}, MAE: {val_metrics['mae']:.5f}, "
               f"RMSE: {val_metrics['rmse']:.5f}, R2: {val_metrics['r2']:.5f}")
         if 'mae_per_target' in val_metrics:
@@ -465,9 +468,9 @@ def _print_epoch_progress(epoch, val_metrics, epoch_train_loss, optimizer, task_
                 val_metrics['rmse_per_target'],
                 val_metrics['r2_per_target']
             )):
-                print(f"  [Val Target {i}] MAE={mae_i:.5f}, RMSE={rmse_i:.5f}, R2={r2_i:.5f}")
+                logger.info(f"  [Val Target {i}] MAE={mae_i:.5f}, RMSE={rmse_i:.5f}, R2={r2_i:.5f}")
     else:
-        print(f"\nEpoch {epoch + 1} | LR: {optimizer.param_groups[0]['lr']:.8f}")
-        print(f"[Train Loss: {epoch_train_loss:.5f}] "
+        logger.info(f"Epoch {epoch + 1} | LR: {optimizer.param_groups[0]['lr']:.8f}")
+        logger.info(f"[Train Loss: {epoch_train_loss:.5f}] "
               f"Val => Loss: {val_metrics['loss']:.5f}, MAE: {val_metrics['mae']:.5f}, "
               f"RMSE: {val_metrics['rmse']:.5f}, R2: {val_metrics['r2']:.5f}")

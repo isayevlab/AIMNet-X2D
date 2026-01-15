@@ -4,7 +4,7 @@ High-level inference engine and legacy compatibility.
 
 import torch
 import torch.distributed as dist
-from typing import Optional
+from typing import Optional, List
 
 from .config import InferenceConfig
 from .pipeline import InferencePipeline
@@ -12,12 +12,12 @@ from datasets import create_iterable_pyg_dataloader
 from datasets.constants import DEFAULT_SHUFFLE_BUFFER_SIZE
 from training import predict_gnn
 from utils.distributed import safe_get_rank, is_main_process
+from utils.logging import get_logger
 
 import tqdm
-
 import numpy as np
 
-from typing import List
+logger = get_logger(__name__)
 
 
 
@@ -45,14 +45,14 @@ class InferenceEngine:
     def _run_csv_inference(self):
         """Run streaming inference on CSV input."""
         if is_main_process():
-            print(f"[Engine] Running streaming CSV inference")
+            logger.info("Running streaming CSV inference")
         
         self.pipeline.run_streaming_inference()
 
     def _run_hdf5_inference(self, device: torch.device):
         """Run inference on HDF5 input with SMILES and ID tracking."""
         if is_main_process():
-            print(f"[Engine] Running HDF5 inference")
+            logger.info("Running HDF5 inference")
         
         # Get total molecule count
         total_molecules = None
@@ -67,7 +67,7 @@ class InferenceEngine:
             pass  # File may not exist or have expected structure
         
         if is_main_process() and total_molecules:
-            print(f"[Engine] Processing {total_molecules:,} molecules")
+            logger.info(f"Processing {total_molecules:,} molecules")
         
         # Create data loader
         inference_loader = create_iterable_pyg_dataloader(
@@ -200,7 +200,7 @@ class InferenceEngine:
         world_size = self.config.world_size
         
         if is_main_process():
-            print(f"[Engine] Gathering SMILES from {world_size} ranks...")
+            logger.info(f"Gathering SMILES from {world_size} ranks...")
         
         # Serialize local SMILES to bytes
         local_bytes = pickle.dumps(local_smiles)
@@ -233,9 +233,9 @@ class InferenceEngine:
                 chunk_bytes = gathered_tensors[i][:valid_size].cpu().numpy().tobytes()
                 chunk_smiles = pickle.loads(chunk_bytes)
                 all_smiles.extend(chunk_smiles)
-                print(f"[Engine] Rank 0: Gathered {len(chunk_smiles)} SMILES from rank {i}")
+                logger.debug(f"Rank 0: Gathered {len(chunk_smiles)} SMILES from rank {i}")
             
-            print(f"[Engine] Rank 0: Total gathered SMILES: {len(all_smiles)}")
+            logger.info(f"Rank 0: Total gathered SMILES: {len(all_smiles)}")
             return all_smiles
         else:
             # Other ranks don't need the combined result
@@ -257,7 +257,7 @@ class InferenceEngine:
             return local_predictions
         
         if is_main_process():
-            print(f"[Engine] Gathering predictions from {self.config.world_size} ranks...")
+            logger.info(f"Gathering predictions from {self.config.world_size} ranks...")
         
         # Use the existing utility from distributed module
         from utils.distributed import gather_ndarray_to_rank0
@@ -265,7 +265,7 @@ class InferenceEngine:
         gathered = gather_ndarray_to_rank0(local_predictions, device)
         
         if self.config.rank == 0:
-            print(f"[Engine] Rank 0: Gathered {len(gathered)} predictions from all ranks")
+            logger.info(f"Rank 0: Gathered {len(gathered)} predictions from all ranks")
         
         return gathered
 
@@ -283,12 +283,12 @@ class InferenceEngine:
         
         # CRITICAL FIX: Validate this is only called by rank 0 in DDP
         if self.config.ddp_enabled and self.config.rank != 0:
-            print(f"[Engine] ERROR: Rank {self.config.rank} called _save_hdf5_predictions_with_smiles!")
-            print(f"[Engine] This should ONLY be called by rank 0!")
+            logger.error(f"Rank {self.config.rank} called _save_hdf5_predictions_with_smiles!")
+            logger.error("This should ONLY be called by rank 0!")
             return
         
         if len(predictions) == 0:
-            print("[Engine] WARNING: No predictions to save!")
+            logger.warning("No predictions to save!")
             return
         
         # CRITICAL: Validate counts match
@@ -308,7 +308,7 @@ class InferenceEngine:
                 f"SOLUTION: Check that SMILES are gathered correctly before saving."
             )
         
-        print(f"[Engine] Rank 0: Saving {len(smiles_list)} predictions to CSV...")
+        logger.info(f"Rank 0: Saving {len(smiles_list)} predictions to CSV...")
         
         # Create DataFrame with SMILES first
         df_dict = {'smiles': smiles_list}
@@ -329,15 +329,15 @@ class InferenceEngine:
         pred_df = pd.DataFrame(df_dict)
         pred_df.to_csv(self.config.output_path, index=False)
         
-        print(f"\n{'='*60}")
-        print(f"✅ HDF5 INFERENCE COMPLETE")
-        print(f"{'='*60}")
-        print(f"  Molecules: {len(smiles_list):,}")
-        print(f"  Output: {self.config.output_path}")
-        print(f"  Columns: {', '.join(pred_df.columns)}")
+        logger.info(f"{'='*60}")
+        logger.info("HDF5 INFERENCE COMPLETE")
+        logger.info(f"{'='*60}")
+        logger.info(f"  Molecules: {len(smiles_list):,}")
+        logger.info(f"  Output: {self.config.output_path}")
+        logger.info(f"  Columns: {', '.join(pred_df.columns)}")
         if self.config.ddp_enabled:
-            print(f"  Combined from: {self.config.world_size} GPU ranks")
-        print(f"{'='*60}\n")
+            logger.info(f"  Combined from: {self.config.world_size} GPU ranks")
+        logger.info(f"{'='*60}")
 
     def _extract_hdf5_embeddings(self, inference_loader, device):
         """Extract embeddings from HDF5 inference."""
@@ -383,8 +383,8 @@ def inference_main(args, device, is_ddp, local_rank, world_size, total_molecules
         
         # Success message
         if is_main_process():
-            print("[Engine] Inference completed successfully")
+            logger.info("Inference completed successfully")
             
     except Exception as e:
-        print(f"[Engine] Rank {local_rank}: Error during inference: {e}")
+        logger.error(f"Rank {local_rank}: Error during inference: {e}")
         return

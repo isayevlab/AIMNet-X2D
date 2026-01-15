@@ -21,6 +21,9 @@ from numba import njit, boolean
 from numba.typed import List as NumbaList
 
 from .constants import ATOM_TYPES, DEGREES, HYBRIDIZATIONS
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def partial_parse_atomic_numbers(smiles: str) -> np.ndarray or None:
@@ -68,7 +71,7 @@ def compute_sae_dict_from_atomic_numbers_list(
     A_filt = A[mask]
     b_filt = all_targets[mask]
 
-    print(f"Fitting atomic contributions using {len(b_filt)} molecules (after percentile filtering).")
+    logger.info(f"Fitting atomic contributions using {len(b_filt)} molecules (after percentile filtering)")
     sae_values, residuals, rank, s = np.linalg.lstsq(A_filt, b_filt, rcond=None)
 
     sae_dict = {}
@@ -165,7 +168,7 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
     """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        print(f"WARNING: Invalid SMILES could not be parsed: '{smiles}'")
+        logger.warning(f"Invalid SMILES could not be parsed: '{smiles}'")
         return None
 
     # Add H's and assign stereochemistry
@@ -174,7 +177,7 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
         Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
         processed_smi = Chem.MolToSmiles(mol, isomericSmiles=True, allHsExplicit=True)
     except Exception as e:
-        print(f"WARNING: Failed to process SMILES '{smiles}': {e}")
+        logger.warning(f"Failed to process SMILES '{smiles}': {e}")
         return None
 
     # 1) Multi-hop BFS edges
@@ -184,7 +187,7 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
         edge_indices_list = compute_multi_hop_edges_bfs_numba(adj_list_numba, max_hops)
         multi_hop_edges = edge_indices_list
     except Exception as e:
-        print(f"WARNING: Failed to compute multi-hop edges for SMILES '{smiles}': {e}")
+        logger.warning(f"Failed to compute multi-hop edges for SMILES '{smiles}': {e}")
         return None
 
     # 2) Atom features
@@ -202,7 +205,7 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
                 'hybridization': hybridization,
             })
     except Exception as e:
-        print(f"WARNING: Failed to compute atom features for SMILES '{smiles}': {e}")
+        logger.warning(f"Failed to compute atom features for SMILES '{smiles}': {e}")
         return None
 
     # Store atomic numbers in a single array
@@ -212,7 +215,7 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
             dtype=np.int32
         )
     except Exception as e:
-        print(f"WARNING: Failed to extract atomic numbers for SMILES '{smiles}': {e}")
+        logger.warning(f"Failed to extract atomic numbers for SMILES '{smiles}': {e}")
         return None
 
     # 3) Chiral centers
@@ -224,7 +227,7 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
             neighbors = [nbr.GetIdx() for nbr in center_atom.GetNeighbors()]
             chiral_tensors.append(np.array(neighbors, dtype=np.int32))
     except Exception as e:
-        print(f"WARNING: Failed to compute chiral centers for SMILES '{smiles}': {e}")
+        logger.warning(f"Failed to compute chiral centers for SMILES '{smiles}': {e}")
         chiral_tensors = []
 
     # 4) Cis/Trans bonds
@@ -293,13 +296,13 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
                     trans_bonds_list.append([e_low, s_high])
                     trans_bonds_list.append([e_high, s_low])
     except Exception as e:
-        print(f"WARNING: Failed to compute cis/trans bonds for SMILES '{smiles}': {e}")
+        logger.warning(f"Failed to compute cis/trans bonds for SMILES '{smiles}': {e}")
 
     # 5) Total formal charge
     try:
         total_charge = sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
     except Exception as e:
-        print(f"WARNING: Failed to compute total charge for SMILES '{smiles}': {e}")
+        logger.warning(f"Failed to compute total charge for SMILES '{smiles}': {e}")
         total_charge = 0
 
     # 6) Convert atom features to index arrays
@@ -336,7 +339,7 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
         for k in mapped_atom_features:
             mapped_atom_features[k] = np.array(mapped_atom_features[k], dtype=np.int8)
     except Exception as e:
-        print(f"WARNING: Failed to map atom features for SMILES '{smiles}': {e}")
+        logger.warning(f"Failed to map atom features for SMILES '{smiles}': {e}")
         return None
 
     chiral_tensors = [np.array(x, dtype=np.int32) for x in chiral_tensors]
@@ -372,7 +375,7 @@ def precompute_all_and_filter(
     Returns:
         Tuple of (valid_smiles, valid_targets, precomputed_data)
     """
-    print(f"Precomputing multi-hop edge + features for {len(smiles_list)} SMILES using {num_workers} workers...")
+    logger.info(f"Precomputing multi-hop edge + features for {len(smiles_list)} SMILES using {num_workers} workers...")
     start_time = time.time()
 
     compute_partial = partial(compute_all, max_hops=max_hops)
@@ -392,9 +395,9 @@ def precompute_all_and_filter(
                 precomputed_data.append(res)
 
     end_time = time.time()
-    print(f"Total time: {end_time - start_time:.2f} seconds")
+    logger.info(f"Total time: {end_time - start_time:.2f} seconds")
     discarded = len(smiles_list) - len(valid_smiles)
-    print(f"Kept {len(valid_smiles)} valid SMILES; discarded {discarded} invalid or unparseable.")
+    logger.info(f"Kept {len(valid_smiles)} valid SMILES; discarded {discarded} invalid or unparseable")
 
     return valid_smiles, valid_targets, precomputed_data
 
@@ -413,14 +416,14 @@ def precompute_and_write_hdf5_parallel_chunked(
     """
     FIXED: Proper multiprocessing cleanup to prevent memory leaks.
     """
-    print(f"Using {num_workers} workers")
+    logger.info(f"Using {num_workers} workers")
 
     # CRITICAL FIX: Ensure parent directory exists and is properly named
     hdf5_path = os.path.abspath(hdf5_path)
     parent_dir = os.path.dirname(hdf5_path)
     if parent_dir and not os.path.exists(parent_dir):
         os.makedirs(parent_dir, exist_ok=True)
-        print(f"Created directory: {parent_dir}")
+        logger.info(f"Created directory: {parent_dir}")
 
     with h5py.File(hdf5_path, "w") as f:
         dt = h5py.vlen_dtype(np.dtype("uint8"))
@@ -443,13 +446,13 @@ def precompute_and_write_hdf5_parallel_chunked(
             for i, col in enumerate(multi_target_columns):
                 target_cols[i] = col
 
-        print(f"Writing data to HDF5 (parallel + chunked) => {hdf5_path}")
+        logger.info(f"Writing data to HDF5 (parallel + chunked) => {hdf5_path}")
         
         if preprocessing_applied:
-            print("   → Target values are ALREADY PREPROCESSED (SAE + scaling applied)")
-            print("   → No additional SAE normalization will be applied")
+            logger.info("Target values are ALREADY PREPROCESSED (SAE + scaling applied)")
+            logger.info("No additional SAE normalization will be applied")
         else:
-            print("   → Target values are RAW, SAE normalization will be applied if requested")
+            logger.info("Target values are RAW, SAE normalization will be applied if requested")
 
         # FIXED: Proper multiprocessing cleanup
         func_partial = partial(_worker_bfs, max_hops=max_hops)
@@ -496,7 +499,7 @@ def precompute_and_write_hdf5_parallel_chunked(
                         buffer_indices = []
 
         except Exception as e:
-            print(f"ERROR during parallel processing: {e}")
+            logger.error(f"Error during parallel processing: {e}")
             raise
         
         finally:
@@ -530,12 +533,12 @@ def precompute_and_write_hdf5_parallel_chunked(
         estimated_valid_pct = (valid_count / sample_size) * 100
         metadata.attrs["estimated_valid_pct"] = estimated_valid_pct
         
-        print(f"HDF5 file created successfully at {hdf5_path}")
-        print(f"Estimated valid molecules: {estimated_valid_pct:.1f}% (based on sample of {sample_size})")
+        logger.info(f"HDF5 file created successfully at {hdf5_path}")
+        logger.info(f"Estimated valid molecules: {estimated_valid_pct:.1f}% (based on sample of {sample_size})")
         if preprocessing_applied:
-            print(f"✅ Data stored with PREPROCESSED targets (ready for training)")
+            logger.info("Data stored with PREPROCESSED targets (ready for training)")
         else:
-            print(f"✅ Data stored with RAW targets (preprocessing applied during HDF5 creation)")
+            logger.info("Data stored with RAW targets (preprocessing applied during HDF5 creation)")
 
 # Worker Functions for Parallel Processing
 
