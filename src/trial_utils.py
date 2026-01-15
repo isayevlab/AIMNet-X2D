@@ -9,13 +9,17 @@ import os
 import copy
 import tempfile
 import shutil
-from typing import Dict, Any
+from typing import Any
 from pathlib import Path
 import time
 import torch
 
+from utils.logging import get_logger
 
-def setup_trial_environment(base_args, config: Dict[str, Any]):
+logger = get_logger(__name__)
+
+
+def setup_trial_environment(base_args, config: dict[str, Any]) -> Any:
     """
     Setup environment for a single trial/experiment.
     """
@@ -108,9 +112,9 @@ def cleanup_temporary_files(args) -> None:
         if hasattr(args, '_trial_temp_dir') and args._trial_temp_dir and os.path.exists(args._trial_temp_dir):
             try:
                 shutil.rmtree(args._trial_temp_dir)
-                print(f"✓ Cleaned up temp directory: {args._trial_temp_dir}")
+                logger.debug("Cleaned up temp directory: %s", args._trial_temp_dir)
             except Exception as e:
-                print(f"⚠️  Failed to clean up {args._trial_temp_dir}: {e}")
+                logger.warning("Failed to clean up %s: %s", args._trial_temp_dir, e)
         
         # CRITICAL FIX: Clean up any orphaned temporary directories
         import tempfile
@@ -141,11 +145,11 @@ def cleanup_temporary_files(args) -> None:
                             dir_age = time.time() - os.path.getmtime(orphan_path)
                             if dir_age < 86400:  # Only clean recent directories
                                 shutil.rmtree(orphan_path)
-                                print(f"✓ Cleaned up orphaned directory: {orphan_path}")
+                                logger.debug("Cleaned up orphaned directory: %s", orphan_path)
                         except Exception as e:
-                            print(f"⚠️  Could not clean up {orphan_path}: {e}")
+                            logger.warning("Could not clean up %s: %s", orphan_path, e)
         except Exception as e:
-            print(f"⚠️  Error scanning temp directory: {e}")
+            logger.warning("Error scanning temp directory: %s", e)
         
         # Clean up current working directory for mystery folders
         cwd = os.getcwd()
@@ -154,14 +158,14 @@ def cleanup_temporary_files(args) -> None:
             if os.path.exists(mystery_dir) and os.path.isdir(mystery_dir):
                 try:
                     shutil.rmtree(mystery_dir)
-                    print(f"✓ Cleaned up mystery directory: {mystery_dir}")
+                    logger.debug("Cleaned up mystery directory: %s", mystery_dir)
                 except Exception as e:
-                    print(f"⚠️  Could not clean up mystery directory {mystery_dir}: {e}")
-                
-    except Exception as e:
-        print(f"⚠️  Error during cleanup: {e}")
+                    logger.warning("Could not clean up mystery directory %s: %s", mystery_dir, e)
 
-def cleanup_trial_environment():
+    except Exception as e:
+        logger.warning("Error during cleanup: %s", e)
+
+def cleanup_trial_environment() -> None:
     """Clean up trial environment after completion."""
     # PyTorch cleanup
     if torch.cuda.is_available():
@@ -193,5 +197,5 @@ def validate_trial_arguments(args) -> bool:
         validate_args(args)
         return True
     except Exception as e:
-        print(f"Argument validation failed: {e}")
+        logger.error("Argument validation failed: %s", e)
         return False
