@@ -7,5 +7,12 @@ optimized for batch processing on GPU.
 
 from .batch import MolecularGraphBatch
 from .preprocessing import SAETransform, StandardScaler, PreprocessingPipeline
+from .featurizer import BatchFeaturizer
 
-__all__ = ["MolecularGraphBatch", "SAETransform", "StandardScaler", "PreprocessingPipeline"]
+__all__ = [
+    "MolecularGraphBatch",
+    "SAETransform",
+    "StandardScaler",
+    "PreprocessingPipeline",
+    "BatchFeaturizer",
+]
