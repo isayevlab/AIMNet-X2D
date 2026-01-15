@@ -14,7 +14,7 @@ from torch import Tensor
 
 from .model_config import ModelConfig
 from .batch import MolecularGraphBatch
-from .layers import ShellConvBlock, AttentionPooling, FeedForwardNetwork
+from .layers import ShellConvBlock, AttentionPooling, FeedForwardNetwork, StereochemistryEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,9 @@ class SimplifiedGNN(nn.Module):
             nn.Linear(concat_dim, config.hidden_dim),
             nn.SiLU(),
         )
+
+        # Stereochemistry encoder (adds to atom features)
+        self.stereo_encoder = StereochemistryEncoder(config.hidden_dim)
 
         # 3. Message passing layers
         self.message_passing_layers = nn.ModuleList()
@@ -151,6 +154,14 @@ class SimplifiedGNN(nn.Module):
 
         # Project to hidden dimension [total_atoms, hidden_dim]
         x = self.projection(x)
+
+        # Add stereochemistry information
+        x = self.stereo_encoder(
+            x,
+            batch.chiral_indices,
+            batch.cis_bond_indices,
+            batch.trans_bond_indices,
+        )
 
         # Message passing layers
         for mp_layer in self.message_passing_layers:

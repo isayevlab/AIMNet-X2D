@@ -382,3 +382,73 @@ class FeedForwardNetwork(nn.Module):
             Output tensor [batch_size, output_dim]
         """
         return self.layers(x)
+
+
+class StereochemistryEncoder(nn.Module):
+    """
+    Encodes stereochemistry information as atom-level features.
+
+    Marks atoms involved in chiral centers and cis/trans bonds with
+    learnable embeddings that get added to atom features.
+
+    Args:
+        hidden_dim: Dimension of atom features to match
+    """
+
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+
+        self.hidden_dim = hidden_dim
+
+        # Learnable embeddings for stereochemistry types
+        self.chiral_center_embed = nn.Parameter(torch.randn(hidden_dim) * 0.02)
+        self.chiral_neighbor_embed = nn.Parameter(torch.randn(hidden_dim) * 0.02)
+        self.cis_bond_embed = nn.Parameter(torch.randn(hidden_dim) * 0.02)
+        self.trans_bond_embed = nn.Parameter(torch.randn(hidden_dim) * 0.02)
+
+    def forward(
+        self,
+        x: Tensor,
+        chiral_indices: Tensor | None,
+        cis_bond_indices: Tensor | None,
+        trans_bond_indices: Tensor | None,
+    ) -> Tensor:
+        """
+        Add stereochemistry information to atom features.
+
+        Args:
+            x: Atom features [num_atoms, hidden_dim]
+            chiral_indices: [num_chiral, 4] - center + 3 neighbors
+            cis_bond_indices: [num_cis, 4] - bond atoms + neighbors
+            trans_bond_indices: [num_trans, 4] - bond atoms + neighbors
+
+        Returns:
+            Updated atom features with stereochemistry encoded
+        """
+        output = x.clone()
+
+        # Add chiral center embeddings
+        if chiral_indices is not None and chiral_indices.shape[0] > 0:
+            center_atoms = chiral_indices[:, 0]
+            output[center_atoms] = output[center_atoms] + self.chiral_center_embed
+
+            neighbor_atoms = chiral_indices[:, 1:4].flatten()
+            valid_neighbors = neighbor_atoms[neighbor_atoms < x.shape[0]]
+            if valid_neighbors.numel() > 0:
+                output[valid_neighbors] = output[valid_neighbors] + self.chiral_neighbor_embed
+
+        # Add cis bond embeddings
+        if cis_bond_indices is not None and cis_bond_indices.shape[0] > 0:
+            cis_atoms = cis_bond_indices[:, :2].flatten()
+            valid_cis = cis_atoms[cis_atoms < x.shape[0]]
+            if valid_cis.numel() > 0:
+                output[valid_cis] = output[valid_cis] + self.cis_bond_embed
+
+        # Add trans bond embeddings
+        if trans_bond_indices is not None and trans_bond_indices.shape[0] > 0:
+            trans_atoms = trans_bond_indices[:, :2].flatten()
+            valid_trans = trans_atoms[trans_atoms < x.shape[0]]
+            if valid_trans.numel() > 0:
+                output[valid_trans] = output[valid_trans] + self.trans_bond_embed
+
+        return output

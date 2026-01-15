@@ -187,3 +187,57 @@ class TestSimplifiedGNN:
             output2 = model2(batch)
 
         assert torch.allclose(output1, output2)
+
+    def test_model_processes_stereochemistry(self):
+        """Test model can process batches with stereochemistry information."""
+        config = ModelConfig(hidden_dim=64, output_dim=1)
+        model = SimplifiedGNN(config)
+
+        # Create batch with stereochemistry info
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (20,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (20,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (20,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (20,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*10 + [1]*10, dtype=torch.int64),
+            ptr=torch.tensor([0, 10, 20], dtype=torch.int64),
+            edge_indices=[
+                torch.randint(0, 20, (2, 30), dtype=torch.int64),
+                torch.randint(0, 20, (2, 20), dtype=torch.int64),
+                torch.randint(0, 20, (2, 10), dtype=torch.int64),
+            ],
+            num_molecules=2,
+            # Stereochemistry: chiral center at atom 5, cis bond at atoms 2-3
+            chiral_indices=torch.tensor([[5, 1, 2, 3]], dtype=torch.int64),
+            cis_bond_indices=torch.tensor([[2, 3, 0, 4]], dtype=torch.int64),
+            trans_bond_indices=torch.zeros((0, 4), dtype=torch.int64),
+        )
+
+        output = model(batch)
+        assert output.shape == (2, 1)
+        assert not torch.isnan(output).any()
+
+    def test_stereochemistry_encoder_modifies_features(self):
+        """Test that StereochemistryEncoder actually modifies atom features."""
+        from src.core.layers import StereochemistryEncoder
+
+        encoder = StereochemistryEncoder(hidden_dim=64)
+
+        # Create atom features
+        x = torch.randn(10, 64)
+
+        # No stereochemistry - output should equal input
+        output_no_stereo = encoder(x, None, None, None)
+        assert torch.allclose(output_no_stereo, x)
+
+        # With chiral center at atom 5
+        chiral_indices = torch.tensor([[5, 1, 2, 3]], dtype=torch.int64)
+        output_with_chiral = encoder(x, chiral_indices, None, None)
+
+        # Atoms 5, 1, 2, 3 should be modified, others unchanged
+        assert not torch.allclose(output_with_chiral[5], x[5])  # Center
+        assert not torch.allclose(output_with_chiral[1], x[1])  # Neighbor
+        assert not torch.allclose(output_with_chiral[2], x[2])  # Neighbor
+        assert not torch.allclose(output_with_chiral[3], x[3])  # Neighbor
+        assert torch.allclose(output_with_chiral[0], x[0])  # Unchanged
+        assert torch.allclose(output_with_chiral[4], x[4])  # Unchanged
