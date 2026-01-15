@@ -7,7 +7,6 @@ particularly the shell-based convolution layer for message passing.
 
 import torch
 import torch.nn as nn
-from typing import List
 from torch_scatter import scatter_add
 
 
@@ -107,7 +106,7 @@ class ShellConvolutionLayer(nn.Module):
         
         return x
 
-    def message_passing(self, atom_features: torch.Tensor, target: torch.Tensor, src: torch.Tensor) -> List[torch.Tensor]:
+    def message_passing(self, atom_features: torch.Tensor, target: torch.Tensor, src: torch.Tensor) -> list[torch.Tensor]:
         """
         Perform multi-hop message passing efficiently.
         

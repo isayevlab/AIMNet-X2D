@@ -5,7 +5,6 @@ This module simply re-exports the preprocessing system from data.preprocessing
 and provides convenient factory functions.
 """
 
-from typing import List, Optional
 
 # Import the preprocessing system from data.preprocessing
 from data.preprocessing import (
@@ -28,7 +27,7 @@ __all__ = [
 
 
 def create_preprocessing_pipeline(apply_sae: bool = False, 
-                                sae_subtasks: Optional[List[int]] = None,
+                                sae_subtasks: list[int] | None = None,
                                 apply_standard_scaling: bool = True,
                                 task_type: str = "regression",
                                 sae_percentile_cutoff: float = 2.0) -> PreprocessingPipeline:
@@ -76,7 +75,7 @@ def create_preprocessing_pipeline(apply_sae: bool = False,
 
 
 def create_sae_pipeline(task_type: str = "regression", 
-                       subtasks: Optional[List[int]] = None) -> PreprocessingPipeline:
+                       subtasks: list[int] | None = None) -> PreprocessingPipeline:
     """
     Create a pipeline with SAE normalization enabled.
     

@@ -7,13 +7,14 @@ shell convolution layers, pooling, and feed-forward networks.
 
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple, Optional
 import torch.nn.functional as F
-
 
 from .layers import ShellConvolutionLayer, MultiLayerPerceptron
 from .pooling import create_pooling_layer
 from utils.activation import get_activation_function
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class GNN(nn.Module):
@@ -47,14 +48,14 @@ class GNN(nn.Module):
         loss_function: Type of loss function ('l1', 'mse', 'evidential')
     """
     
-    def __init__(self, 
-                 feature_sizes: Dict[str, int], 
-                 hidden_dim: int, 
-                 output_dim: int, 
+    def __init__(self,
+                 feature_sizes: dict[str, int],
+                 hidden_dim: int,
+                 output_dim: int,
                  num_shells: int = 3,
-                 num_message_passing_layers: int = 3, 
-                 dropout: float = 0.05, 
-                 ffn_hidden_dim: Optional[int] = None,
+                 num_message_passing_layers: int = 3,
+                 dropout: float = 0.05,
+                 ffn_hidden_dim: int | None = None,
                  ffn_num_layers: int = 3, 
                  pooling_type: str = 'attention',
                  task_type: str = 'regression',
@@ -83,10 +84,10 @@ class GNN(nn.Module):
         if ffn_hidden_dim is None:
             ffn_hidden_dim = hidden_dim
 
-        # Print feature activation status
-        print(f"[GNN] Partial Charges: {self.use_partial_charges}")
-        print(f"[GNN] Stereochemistry: {self.use_stereochemistry}")
-        print(f"[GNN] Loss Function: {self.loss_function}")
+        # Log feature activation status
+        logger.info(f"Partial Charges: {self.use_partial_charges}")
+        logger.info(f"Stereochemistry: {self.use_stereochemistry}")
+        logger.info(f"Loss Function: {self.loss_function}")
 
         # Embedding layers for atomic features
         self._create_embeddings(feature_sizes, embedding_dim)
@@ -136,7 +137,7 @@ class GNN(nn.Module):
         if loss_function == "evidential":
             # For evidential learning, output 4 parameters per task
             final_output_dim = output_dim * 4
-            print(f"[GNN] Evidential mode: outputting {final_output_dim} parameters ({output_dim} tasks × 4 params)")
+            logger.info(f"Evidential mode: outputting {final_output_dim} parameters ({output_dim} tasks x 4 params)")
         else:
             final_output_dim = output_dim
             
@@ -148,7 +149,7 @@ class GNN(nn.Module):
         # Initialize weights
         self.init_weights()
 
-    def _create_embeddings(self, feature_sizes: Dict[str, int], embedding_dim: int):
+    def _create_embeddings(self, feature_sizes: dict[str, int], embedding_dim: int) -> None:
         """Create embedding layers for atomic features."""
         self.atom_type_embedding = nn.Embedding(
             num_embeddings=feature_sizes['atom_type'],
@@ -170,8 +171,8 @@ class GNN(nn.Module):
             embedding_dim=embedding_dim
         )
 
-    def _create_message_passing_layers(self, num_layers: int, num_shells: int, 
-                                     activation_type: str, dropout: float, num_mlp_layers: int):
+    def _create_message_passing_layers(self, num_layers: int, num_shells: int,
+                                     activation_type: str, dropout: float, num_mlp_layers: int) -> None:
         """Create message passing layers."""
         self.message_passing_layers = nn.ModuleList()
         for _ in range(num_layers):
@@ -185,7 +186,7 @@ class GNN(nn.Module):
             )
             self.message_passing_layers.append(layer)
 
-    def _create_processing_layers(self, hidden_dim: int, activation_type: str):
+    def _create_processing_layers(self, hidden_dim: int, activation_type: str) -> None:
         """Create layers for feature processing and stereochemistry."""
         self.concat_self_other = nn.Linear(hidden_dim, hidden_dim)
         
@@ -194,14 +195,14 @@ class GNN(nn.Module):
             self.stereochemical_embedding = nn.Linear(hidden_dim * 3, hidden_dim)
             self.stereochemical_embedding_2 = nn.Linear(self.x_other_dim * 3, self.x_other_dim)
 
-    def forward(self, 
-                atom_features: Dict[str, torch.Tensor], 
-                multi_hop_edge_indices: torch.Tensor, 
+    def forward(self,
+                atom_features: dict[str, torch.Tensor],
+                multi_hop_edge_indices: torch.Tensor,
                 batch_indices: torch.Tensor,
-                total_charges: torch.Tensor, 
-                tetrahedral_indices: torch.Tensor, 
-                cis_indices: torch.Tensor, 
-                trans_indices: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+                total_charges: torch.Tensor,
+                tetrahedral_indices: torch.Tensor,
+                cis_indices: torch.Tensor,
+                trans_indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """
         Forward pass through the GNN.
         
@@ -259,7 +260,7 @@ class GNN(nn.Module):
 
         return output, attention_weights, partial_charges
 
-    def _embed_atomic_features(self, atom_features: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def _embed_atomic_features(self, atom_features: dict[str, torch.Tensor]) -> torch.Tensor:
         """Embed and concatenate atomic features."""
         atom_type_emb = self.atom_type_embedding(atom_features['atom_type'])
         hydrogen_count_emb = self.hydrogen_count_embedding(atom_features['hydrogen_count'])
@@ -531,9 +532,9 @@ class GNN(nn.Module):
                 if attention_weight.bias is not None:
                     nn.init.zeros_(attention_weight.bias)
 
-        print("[GNN] Model weights initialized")
+        logger.info("Model weights initialized")
 
-    def get_model_info(self) -> Dict[str, any]:
+    def get_model_info(self) -> dict[str, any]:
         """Get information about the model architecture."""
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -570,7 +571,7 @@ class GNNConfig:
     """Configuration helper for GNN model creation."""
     
     @staticmethod
-    def from_args(args) -> Dict[str, any]:
+    def from_args(args) -> dict[str, any]:
         """Create GNN configuration from command line arguments."""
         # Extract feature sizes (this would typically come from your data module)
         feature_sizes = {

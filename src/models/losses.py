@@ -8,7 +8,6 @@ including weighted losses for multi-task learning and evidential loss.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
 
 
 class WeightedL1Loss(nn.Module):
@@ -238,7 +237,7 @@ class WeightedEvidentialLoss(nn.Module):
 
 def create_loss_function(loss_type: str, 
                         task_type: str = 'regression',
-                        multitask_weights: Optional[torch.Tensor] = None,
+                        multitask_weights: torch.Tensor | None = None,
                         **kwargs) -> nn.Module:
     """
     Factory function to create loss functions.

@@ -9,7 +9,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_scatter
-from typing import Optional, Tuple
 
 
 class MeanPoolingLayer(nn.Module):
@@ -18,7 +17,7 @@ class MeanPoolingLayer(nn.Module):
     def __init__(self):
         super(MeanPoolingLayer, self).__init__()
 
-    def forward(self, x: torch.Tensor, batch_indices: torch.Tensor) -> Tuple[torch.Tensor, None]:
+    def forward(self, x: torch.Tensor, batch_indices: torch.Tensor) -> tuple[torch.Tensor, None]:
         """
         Perform mean pooling on node features.
         
@@ -40,7 +39,7 @@ class MaxPoolingLayer(nn.Module):
     def __init__(self):
         super(MaxPoolingLayer, self).__init__()
 
-    def forward(self, x: torch.Tensor, batch_indices: torch.Tensor) -> Tuple[torch.Tensor, None]:
+    def forward(self, x: torch.Tensor, batch_indices: torch.Tensor) -> tuple[torch.Tensor, None]:
         """
         Perform max pooling on node features.
 
@@ -63,7 +62,7 @@ class SumPoolingLayer(nn.Module):
     def __init__(self):
         super(SumPoolingLayer, self).__init__()
 
-    def forward(self, x: torch.Tensor, batch_indices: torch.Tensor) -> Tuple[torch.Tensor, None]:
+    def forward(self, x: torch.Tensor, batch_indices: torch.Tensor) -> tuple[torch.Tensor, None]:
         """
         Perform sum pooling on node features.
 
@@ -119,7 +118,7 @@ class MultiHeadAttentionPoolingLayer(nn.Module):
             
         self.dropout = nn.Dropout(dropout_prob)
 
-    def forward(self, x: torch.Tensor, batch_indices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, batch_indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through multi-head attention pooling.
         
@@ -194,7 +193,7 @@ class SetAttentionPoolingLayer(nn.Module):
         self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
         self.attention = nn.Linear(hidden_dim + input_dim, 1)
         
-    def forward(self, x: torch.Tensor, batch_indices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, batch_indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through set attention pooling.
         
