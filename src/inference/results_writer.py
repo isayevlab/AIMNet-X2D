@@ -104,7 +104,8 @@ class ResultsWriter:
                         header.append('row_id')  # Auto-generated
                 else:
                     header.append('row_id')  # Fallback
-        except (OSError, KeyError, TypeError):
+        except (OSError, KeyError, TypeError) as e:
+            logger.debug(f"Could not read HDF5 metadata for ID column: {e}, using 'row_id'")
             header.append('row_id')  # Fallback on error
 
         # Get target column names from saved model
@@ -254,7 +255,7 @@ class ResultsWriter:
 
         logger.info("Rank 0: Beginning file combination...")
 
-        # Verify all rank files exist
+        # Verify all rank files exist and collect them
         existing_files = []
         for rank in range(self.world_size):
             base, ext = os.path.splitext(self.config.output_path)
@@ -263,17 +264,9 @@ class ResultsWriter:
             if os.path.exists(rank_file):
                 file_size = os.path.getsize(rank_file)
                 logger.info(f"  Rank {rank}: {rank_file} ({file_size:,} bytes) - exists")
+                existing_files.append(rank_file)
             else:
                 logger.error(f"  Rank {rank}: MISSING {rank_file}")
-            existing_files.append(rank_file) if os.path.exists(rank_file) else None
-
-        # Re-collect existing files properly
-        existing_files = []
-        for rank in range(self.world_size):
-            base, ext = os.path.splitext(self.config.output_path)
-            rank_file = f"{base}_rank{rank}{ext}"
-            if os.path.exists(rank_file):
-                existing_files.append(rank_file)
 
         if len(existing_files) != self.world_size:
             raise RuntimeError(
@@ -399,18 +392,15 @@ class ResultsWriter:
                     pass
 
     def _close_file_handles(self) -> None:
-        """Close any open file handles."""
-        try:
-            # Close any HDF5 files
-            import h5py
-            # This will close any unclosed HDF5 files
-            h5py.get_config().default_file_mode = 'r'
+        """
+        Close any open file handles.
 
-            # Close any CSV writers or other file handles
-            # Add specific cleanup for your file handles here
-
-        except Exception as e:
-            logger.warning(f"Error closing file handles: {e}")
+        Note: This is a no-op because all file operations in this class
+        use context managers (with statements) which automatically close
+        file handles. This method is retained for API compatibility and
+        potential future use if explicit file handle tracking is needed.
+        """
+        pass
 
     def sync_file_to_disk(self, output_file: str) -> None:
         """
@@ -422,7 +412,9 @@ class ResultsWriter:
         if self.is_ddp:
             try:
                 fd = os.open(output_file, os.O_RDONLY)
-                os.fsync(fd)
-                os.close(fd)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
             except OSError as e:
                 logger.warning(f"Rank {self.rank}: fsync failed: {e}")
