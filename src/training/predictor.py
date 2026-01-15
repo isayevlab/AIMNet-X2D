@@ -4,7 +4,7 @@ Prediction functionality for trained GNN models.
 This module contains functions for making predictions and uncertainty estimation.
 """
 
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -15,6 +15,9 @@ import tqdm
 from torch.utils.data import DataLoader
 
 from utils.distributed import safe_get_rank, gather_ndarray_to_rank0
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @torch.no_grad()
@@ -23,11 +26,11 @@ def predict_gnn(
     data_loader: DataLoader,
     device: torch.device,
     task_type: str = 'regression',
-    preprocessing_pipeline: Optional[Any] = None,
+    preprocessing_pipeline: Any | None = None,
     is_ddp: bool = False,
     show_progress: bool = True,
-    progress_total: Optional[int] = None
-) -> Tuple[np.ndarray, List[str]]:
+    progress_total: int | None = None
+) -> np.ndarray:
     """
     Returns predictions in CPU numpy form with optional progress bar.
     
@@ -108,7 +111,7 @@ def predict_gnn(
         # Apply complete inverse preprocessing
         if preprocessing_pipeline is not None and task_type in ['regression', 'multitask']:
             if is_main:
-                print("Applying inverse preprocessing...")
+                logger.info("Applying inverse preprocessing...")
             local_preds = preprocessing_pipeline.inverse_transform(
                 smiles_list=local_smiles,
                 transformed_targets=local_preds
@@ -127,9 +130,9 @@ def predict_with_mc_dropout(
     device: torch.device,
     num_samples: int = 30,
     task_type: str = 'regression',
-    preprocessing_pipeline: Optional[Any] = None,
+    preprocessing_pipeline: Any | None = None,
     is_ddp: bool = False
-) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Get predictions with uncertainty estimates using Monte Carlo Dropout.
     
@@ -165,7 +168,7 @@ def predict_with_mc_dropout(
     
     if num_batches is not None and is_main:
         total_ops = num_samples * num_batches
-        print(f"[MC Dropout] Running {num_samples} samples × {num_batches} batches = {total_ops} total operations")
+        logger.info(f"[MC Dropout] Running {num_samples} samples x {num_batches} batches = {total_ops} total operations")
         pbar = tqdm.tqdm(total=total_ops, desc="MC Dropout Inference")
     else:
         pbar = None
@@ -253,17 +256,24 @@ def predict_with_mc_dropout(
             uncertainties = _combine_ddp_predictions(uncertainties, device)
         
         if is_main:
-            print(f"[MC Dropout] Completed: {num_samples} samples processed")
+            logger.info(f"[MC Dropout] Completed: {num_samples} samples processed")
         
         return mean_predictions, uncertainties
     else:
         return np.array([]), np.array([])
 
 @torch.no_grad()
-def predict_gnn_with_smiles(model, data_loader, device, task_type, preprocessing_pipeline=None, is_ddp=False):
+def predict_gnn_with_smiles(
+    model: nn.Module,
+    data_loader: DataLoader,
+    device: torch.device,
+    task_type: str,
+    preprocessing_pipeline: Any | None = None,
+    is_ddp: bool = False
+) -> tuple[np.ndarray, list[str]]:
     """
     Get predictions with corresponding SMILES strings.
-    
+
     Args:
         model: Model to use for prediction
         data_loader: DataLoader with input data
@@ -271,7 +281,7 @@ def predict_gnn_with_smiles(model, data_loader, device, task_type, preprocessing
         task_type: Type of task ('regression' or 'multitask')
         preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         is_ddp: Whether DDP is enabled
-        
+
     Returns:
         Tuple of (predictions, smiles_list)
     """
@@ -338,16 +348,16 @@ def predict_gnn_with_smiles(model, data_loader, device, task_type, preprocessing
 
 @torch.no_grad()
 def predict_evidential_with_uncertainty(
-    model,
-    data_loader,
-    device,
-    task_type='regression',
-    preprocessing_pipeline=None,  # CHANGED: was std_scaler
-    is_ddp=False
-):
+    model: nn.Module,
+    data_loader: DataLoader,
+    device: torch.device,
+    task_type: str = 'regression',
+    preprocessing_pipeline: Any | None = None,
+    is_ddp: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Get predictions with uncertainties from evidential learning.
-    
+
     Args:
         model: Model to use for prediction (must be trained with evidential loss)
         data_loader: DataLoader with input data
@@ -355,7 +365,7 @@ def predict_evidential_with_uncertainty(
         task_type: Type of task ('regression' or 'multitask')
         preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         is_ddp: Whether DDP is enabled
-        
+
     Returns:
         Tuple of (predictions, uncertainties)
     """
@@ -425,17 +435,17 @@ def predict_evidential_with_uncertainty(
     return local_preds, local_uncertainties
 
 
-def _process_evidential_outputs(outputs: torch.Tensor, model) -> torch.Tensor:
+def _process_evidential_outputs(outputs: torch.Tensor, model: nn.Module) -> torch.Tensor:
     """
     Process evidential outputs to extract predictions.
-    
+
     For evidential learning, the model outputs 4 parameters per task.
     We extract the gamma (mean) parameter as the prediction.
-    
+
     Args:
         outputs: Raw model outputs
         model: The model (to check loss function)
-        
+
     Returns:
         Processed predictions
     """
@@ -458,14 +468,17 @@ def _process_evidential_outputs(outputs: torch.Tensor, model) -> torch.Tensor:
     return outputs
 
 
-def _process_evidential_outputs_with_uncertainty(outputs: torch.Tensor, model) -> tuple:
+def _process_evidential_outputs_with_uncertainty(
+    outputs: torch.Tensor,
+    model: nn.Module
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Process evidential outputs to extract both predictions and uncertainties.
-    
+
     Args:
         outputs: Raw model outputs from evidential model
         model: The model
-        
+
     Returns:
         Tuple of (predictions, uncertainties)
     """
@@ -503,14 +516,14 @@ def _process_evidential_outputs_with_uncertainty(outputs: torch.Tensor, model) -
     return outputs, uncertainties
 
 
-def _combine_ddp_predictions(local_preds, device):
+def _combine_ddp_predictions(local_preds: np.ndarray, device: torch.device) -> np.ndarray:
     """
     Combine predictions across DDP ranks.
-    
+
     Args:
         local_preds: Local predictions as numpy array
         device: Device for tensor operations
-        
+
     Returns:
         Combined predictions (on rank 0) or local predictions (on other ranks)
     """
@@ -536,18 +549,18 @@ def _combine_ddp_predictions(local_preds, device):
 
 @torch.no_grad()
 def predict_with_uncertainty_estimation(
-    model,
-    data_loader, 
-    device,
-    uncertainty_method='mc_dropout',
-    num_samples=30,
-    task_type='regression',
-    preprocessing_pipeline=None,  # CHANGED: was std_scaler
-    is_ddp=False
-):
+    model: nn.Module,
+    data_loader: DataLoader,
+    device: torch.device,
+    uncertainty_method: str = 'mc_dropout',
+    num_samples: int = 30,
+    task_type: str = 'regression',
+    preprocessing_pipeline: Any | None = None,
+    is_ddp: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Unified function for prediction with uncertainty estimation.
-    
+
     Args:
         model: Model to use for prediction
         data_loader: DataLoader with input data
@@ -557,7 +570,7 @@ def predict_with_uncertainty_estimation(
         task_type: Type of task ('regression' or 'multitask')
         preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         is_ddp: Whether DDP is enabled
-        
+
     Returns:
         Tuple of (predictions, uncertainties)
     """
@@ -579,20 +592,20 @@ def predict_with_uncertainty_estimation(
 
 @torch.no_grad()
 def predict_batch_with_processing(
-    model,
-    batch,
-    device,
-    task_type='regression',
-    preprocessing_pipeline=None,
-    return_uncertainty=False,
-    uncertainty_method='evidential'
-):
+    model: nn.Module,
+    batch: Any,
+    device: torch.device,
+    task_type: str = 'regression',
+    preprocessing_pipeline: Any | None = None,
+    return_uncertainty: bool = False,
+    uncertainty_method: str = 'evidential'
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """
     Process a single batch and return predictions (and optionally uncertainties).
-    
+
     This is a utility function for processing individual batches,
     useful for streaming inference or custom prediction loops.
-    
+
     Args:
         model: Model to use for prediction
         batch: Single batch of data
@@ -601,7 +614,7 @@ def predict_batch_with_processing(
         preprocessing_pipeline: Preprocessing pipeline for inverse transforms
         return_uncertainty: Whether to return uncertainty estimates
         uncertainty_method: Method for uncertainty estimation
-        
+
     Returns:
         Predictions (and uncertainties if requested)
     """
