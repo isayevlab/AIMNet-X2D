@@ -84,3 +84,13 @@ class TestBatchFeaturizer:
         batch = featurizer.featurize(smiles, targets)
 
         assert batch.num_molecules == 10
+
+    def test_all_invalid_raises_error(self):
+        """Test that all invalid SMILES raises ValueError."""
+        featurizer = BatchFeaturizer(num_hops=2)
+
+        smiles = ["INVALID1", "INVALID2", "INVALID3"]
+        targets = np.array([[1.0], [2.0], [3.0]])
+
+        with pytest.raises(ValueError, match="No valid molecules"):
+            featurizer.featurize(smiles, targets)

@@ -13,7 +13,6 @@ import torch
 import numpy as np
 
 from rdkit import Chem
-from rdkit.Chem import AllChem
 
 from .batch import MolecularGraphBatch
 from datasets.features import (
@@ -114,8 +113,8 @@ def _featurize_single(args: tuple[str, int]) -> dict[str, Any] | None:
                         bond.GetBeginAtomIdx(), bond.GetEndAtomIdx(),
                         bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
                     ])
-        except Exception:
-            pass
+        except (RuntimeError, ValueError) as e:
+            logger.debug(f"Stereochemistry assignment failed: {e}")
 
         return {
             "smiles": smiles,
