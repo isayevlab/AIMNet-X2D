@@ -11,10 +11,13 @@ import torch
 import torch.utils.data
 import h5py
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import Any
 from torch_geometric.data import InMemoryDataset, Data, Batch
 
 from .constants import DEFAULT_SHUFFLE_BUFFER_SIZE, DEFAULT_RANDOM_SEED
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class PyGSMILESDataset(InMemoryDataset):
@@ -28,16 +31,16 @@ class PyGSMILESDataset(InMemoryDataset):
         transform: PyG transform to apply
         pre_transform: PyG pre-transform to apply
     """
-    
+
     def __init__(
         self,
-        smiles_list: List[str],
-        targets: List[Any],
-        precomputed_data: List[Dict[str, Any]],
+        smiles_list: list[str],
+        targets: list[Any],
+        precomputed_data: list[dict[str, Any]],
         transform=None,
         pre_transform=None,
         **kwargs
-    ):
+    ) -> None:
         self.smiles_list = smiles_list
         self.targets = targets
         self.precomputed_data = precomputed_data
@@ -47,17 +50,17 @@ class PyGSMILESDataset(InMemoryDataset):
         self.slices = None
 
     @property
-    def raw_file_names(self):
+    def raw_file_names(self) -> list[str]:
         return []
 
     @property
-    def processed_file_names(self):
+    def processed_file_names(self) -> list[str]:
         return []
 
-    def download(self):
+    def download(self) -> None:
         pass
 
-    def process(self):
+    def process(self) -> None:
         self.data_list = []
         for i, smiles in enumerate(self.smiles_list):
             precomp = self.precomputed_data[i]
@@ -94,10 +97,10 @@ class PyGSMILESDataset(InMemoryDataset):
 
             self.data_list.append(data)
 
-    def len(self):
+    def len(self) -> int:
         return len(self.data_list)
 
-    def get(self, idx):
+    def get(self, idx: int) -> Data:
         return self.data_list[idx]
 
 
@@ -127,10 +130,10 @@ class HDF5MolecularIterableDataset(torch.utils.data.IterableDataset):
                  ddp_enabled: bool = False,
                  rank: int = 0,
                  world_size: int = 1,
-                 fold_indices: List[int] = None,
-                 cv_fold: int = None,
+                 fold_indices: list[int] | None = None,
+                 cv_fold: int | None = None,
                  seed: int = DEFAULT_RANDOM_SEED,
-                 preprocessing_pipeline = None):
+                 preprocessing_pipeline: Any | None = None) -> None:
         super().__init__()
         self.hdf5_path = hdf5_path
         self.shuffle = shuffle
@@ -149,8 +152,8 @@ class HDF5MolecularIterableDataset(torch.utils.data.IterableDataset):
         
         # Pre-load metadata outside the iterator
         self._load_metadata()
-        
-    def _load_metadata(self):
+
+    def _load_metadata(self) -> None:
         """Load HDF5 metadata only once to avoid repeated file access."""
         with h5py.File(self.hdf5_path, "r") as f:
             self._length = f["data"].shape[0]
@@ -194,7 +197,7 @@ class HDF5MolecularIterableDataset(torch.utils.data.IterableDataset):
             if fold_key in self.cv_splits:
                 self.fold_indices = self.cv_splits[fold_key]["train_indices"]
 
-    def __len__(self):
+    def __len__(self) -> int:
         # Calculate length based on fold_indices if available
         if self.fold_indices is not None:
             return len(self.fold_indices)
@@ -266,12 +269,12 @@ class HDF5MolecularIterableDataset(torch.utils.data.IterableDataset):
                     if data_obj is not None:
                         yield data_obj
                 except Exception as e:
-                    print(f"Error processing index {idx} (mapped to {mapped_idx}): {str(e)}")
+                    logger.warning(f"Error processing index {idx} (mapped to {mapped_idx}): {str(e)}")
                     continue
         finally:
             f.close()
 
-    def _build_data_object(self, item):
+    def _build_data_object(self, item: dict[str, Any] | None) -> Data | None:
         """Convert raw HDF5 result into a PyG Data object."""
         if item is None or (item.get('precomputed') is None):
             return None
@@ -339,7 +342,7 @@ class MolecularBatch(Batch):
     and stereo/chemical information.
     """
     @staticmethod
-    def from_data_list(data_list):
+    def from_data_list(data_list: list[Data]) -> Batch:
         """
         Collates multiple Data objects into a single batch
         with BFS offset/padding logic + offset chirality/cis/trans indices.

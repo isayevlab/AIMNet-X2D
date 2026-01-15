@@ -6,7 +6,7 @@ Molecular feature computation and processing.
 import time
 import pickle
 import random
-from typing import List, Dict, Tuple, Any
+from typing import Any
 from multiprocessing import Pool
 from functools import partial
 import os
@@ -26,7 +26,7 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def partial_parse_atomic_numbers(smiles: str) -> np.ndarray or None:
+def partial_parse_atomic_numbers(smiles: str) -> np.ndarray | None:
     """Quick parse of SMILES to get atomic numbers only."""
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -40,10 +40,10 @@ def partial_parse_atomic_numbers(smiles: str) -> np.ndarray or None:
 
 
 def compute_sae_dict_from_atomic_numbers_list(
-    atomic_numbers_list: List[np.ndarray],
-    target_values: List[float],
+    atomic_numbers_list: list[np.ndarray],
+    target_values: list[float],
     percentile_cutoff: float = 2.0
-) -> Dict[int, float]:
+) -> dict[int, float]:
     """
     Compute Size-Extensive Additive (SAE) contribution for each atom type.
     
@@ -154,7 +154,7 @@ def compute_multi_hop_edges_bfs_numba(adj_list, max_hops):
     return results
 
 
-def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
+def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
     """
     Compute multi-hops + features in one pass.
     Return None if SMILES invalid/unparseable or any essential step fails.
@@ -358,11 +358,11 @@ def compute_all(smiles: str, max_hops: int) -> Dict[str, Any] or None:
     }
 
 def precompute_all_and_filter(
-    smiles_list: List[str],
-    target_values: List[Any],  # float or list[float]
+    smiles_list: list[str],
+    target_values: list[Any],  # float or list[float]
     max_hops: int,
     num_workers: int = 4
-) -> Tuple[List[str], List[Any], List[Dict[str, Any]]]:
+) -> tuple[list[str], list[Any], list[dict[str, Any]]]:
     """
     In-memory BFS + feature precomputation with multiprocessing.
     
@@ -402,17 +402,17 @@ def precompute_all_and_filter(
     return valid_smiles, valid_targets, precomputed_data
 
 def precompute_and_write_hdf5_parallel_chunked(
-    smiles_list: List[str],
-    target_values: List[Any],
+    smiles_list: list[str],
+    target_values: list[Any],
     max_hops: int,
     hdf5_path: str,
     num_workers: int = 4,
     chunk_size: int = 1000,
-    sae_subtasks: List[int] = None,
+    sae_subtasks: list[int] | None = None,
     task_type: str = "regression",
-    multi_target_columns: List[str] = None,
+    multi_target_columns: list[str] | None = None,
     preprocessing_applied: bool = True,
-):
+) -> None:
     """
     FIXED: Proper multiprocessing cleanup to prevent memory leaks.
     """
@@ -542,7 +542,7 @@ def precompute_and_write_hdf5_parallel_chunked(
 
 # Worker Functions for Parallel Processing
 
-def _worker_bfs(smiles_and_target, max_hops):
+def _worker_bfs(smiles_and_target: tuple[str, Any], max_hops: int) -> dict[str, Any] | None:
     """Worker function for parallel feature computation."""
     smi, tgt = smiles_and_target
     precomp = compute_all(smi, max_hops)
@@ -555,13 +555,13 @@ def _worker_bfs(smiles_and_target, max_hops):
     }
 
 
-def _worker_process_smiles(item):
+def _worker_process_smiles(item: tuple[int, str, int]) -> tuple[int, dict[str, Any] | None]:
     """
     Worker function for processing SMILES in parallel.
-    
+
     Args:
         item: Tuple containing (idx, smiles, max_hops)
-    
+
     Returns:
         Tuple of (idx, precomp) where precomp is the result of compute_all
         or None if the SMILES couldn't be processed

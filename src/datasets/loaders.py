@@ -3,15 +3,18 @@
 Data loader creation and collate functions for molecular datasets.
 """
 
-from typing import Any, List, Optional
+from typing import Any
 
 from torch.utils.data import DataLoader, Sampler
 from torch_geometric.data import Data
 
 from .molecular import PyGSMILESDataset, HDF5MolecularIterableDataset, MolecularBatch
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
-def iterable_collate_fn(batch_list: List[Optional[Data]]) -> Optional[MolecularBatch]:
+def iterable_collate_fn(batch_list: list[Data | None]) -> MolecularBatch | None:
     """Collate function for iterable datasets, filtering out None values."""
     filtered = [b for b in batch_list if b is not None]
     if len(filtered) == 0:
@@ -24,7 +27,7 @@ def create_pyg_dataloader(
     batch_size: int,
     shuffle: bool,
     num_workers: int,
-    sampler: Optional[Sampler] = None
+    sampler: Sampler | None = None
 ) -> DataLoader:
     """
     Creates a PyTorch DataLoader for an InMemoryDataset.
@@ -57,7 +60,7 @@ def create_iterable_pyg_dataloader(
     ddp_enabled: bool = False,
     rank: int = 0,
     world_size: int = 1,
-    preprocessing_pipeline: Optional[Any] = None
+    preprocessing_pipeline: Any | None = None
 ) -> DataLoader:
     """
     Creates a DataLoader for an HDF5MolecularIterableDataset.
@@ -100,13 +103,13 @@ def create_iterable_pyg_dataloader(
     pipeline_to_use = None
     if data_is_preprocessed:
         if preprocessing_pipeline is not None and rank == 0:
-            print(f"[DataLoader] ✓ HDF5 contains PREPROCESSED data")
-            print(f"[DataLoader]   → Preprocessing will NOT be applied (would corrupt data!)")
+            logger.info("HDF5 contains PREPROCESSED data")
+            logger.info("Preprocessing will NOT be applied (would corrupt data!)")
         pipeline_to_use = None  # Don't apply preprocessing again!
     else:
         if rank == 0:
-            print(f"[DataLoader] ✓ HDF5 contains RAW data")
-            print(f"[DataLoader]   → Preprocessing will be applied during loading")
+            logger.info("HDF5 contains RAW data")
+            logger.info("Preprocessing will be applied during loading")
         pipeline_to_use = preprocessing_pipeline
     
     dataset = HDF5MolecularIterableDataset(

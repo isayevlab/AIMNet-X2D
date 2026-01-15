@@ -4,7 +4,7 @@ Data input/output functions for molecular datasets.
 """
 
 import pandas as pd
-from typing import List, Tuple, Any
+from typing import Any
 from sklearn.model_selection import train_test_split
 
 
@@ -12,7 +12,7 @@ def load_dataset_simple(
     file_path: str,
     smiles_column: str,
     target_column: str
-) -> Tuple[List[str], List[float]]:
+) -> tuple[list[str], list[float]]:
     """
     Load a simple dataset from CSV with one target.
     
@@ -33,8 +33,8 @@ def load_dataset_simple(
 def load_dataset_multitask(
     file_path: str,
     smiles_column: str,
-    multi_target_columns: List[str]
-) -> Tuple[List[str], List[List[float]]]:
+    multi_target_columns: list[str]
+) -> tuple[list[str], list[list[float]]]:
     """
     Load a multi-task dataset from CSV.
     
@@ -53,13 +53,13 @@ def load_dataset_multitask(
 
 
 def split_dataset(
-    smiles_list: List[str],
-    target_values: List[Any],
+    smiles_list: list[str],
+    target_values: list[Any],
     train_split: float,
     val_split: float,
     test_split: float,
     task_type: str = 'regression'
-) -> Tuple[List[str], List[Any], List[str], List[Any], List[str], List[Any]]:
+) -> tuple[list[str], list[Any], list[str], list[Any], list[str], list[Any]]:
     """
     Split dataset into train, validation, and test sets.
     

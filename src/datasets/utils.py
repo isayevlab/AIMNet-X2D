@@ -4,11 +4,10 @@ Utility functions for dataset management.
 """
 
 import os
-from typing import List
 from .molecular import PyGSMILESDataset
 
 
-def subset_in_memory_dataset(dataset: PyGSMILESDataset, indices: List[int]) -> PyGSMILESDataset:
+def subset_in_memory_dataset(dataset: PyGSMILESDataset, indices: list[int]) -> PyGSMILESDataset:
     """
     Creates a new PyGSMILESDataset containing only the data objects at the specified indices.
     
@@ -25,7 +24,7 @@ def subset_in_memory_dataset(dataset: PyGSMILESDataset, indices: List[int]) -> P
     return PyGSMILESDataset(subset_smiles, subset_targets, subset_precomputed)
 
 
-def check_and_create_hdf5_directories(args):
+def check_and_create_hdf5_directories(args) -> None:
     """Create directories for HDF5 files if they don't exist yet."""
     # Handle separate HDF5 files (default behavior)
     for path in [args.train_hdf5, args.val_hdf5, args.test_hdf5]:
