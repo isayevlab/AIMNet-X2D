@@ -4,16 +4,17 @@ Core training functionality for GNN models.
 This module contains the main training loop and related utilities.
 """
 
-import math
-import time
 import gc
+import time
+from typing import Any
+
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.distributed as dist
 import tqdm
 import wandb
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import DataLoader
 
 from utils import get_layer_wise_learning_rates, is_main_process, safe_get_rank
 from utils.logging import get_logger
@@ -25,7 +26,11 @@ logger = get_logger(__name__)
 
 
 
-def _setup_loss_function(current_args, task_type, multitask_weights):
+def _setup_loss_function(
+    current_args: Any,
+    task_type: str,
+    multitask_weights: list[float] | None
+) -> nn.Module:
     """Setup the appropriate loss function based on configuration."""
     if current_args.loss_function == 'l1':
         if task_type == 'multitask':
@@ -60,7 +65,10 @@ def _setup_loss_function(current_args, task_type, multitask_weights):
     return criterion
 
 
-def _setup_scheduler(optimizer, current_args):
+def _setup_scheduler(
+    optimizer: torch.optim.Optimizer,
+    current_args: Any
+) -> torch.optim.lr_scheduler.LRScheduler | None:
     """Setup the learning rate scheduler based on configuration."""
     if current_args.lr_scheduler == "ReduceLROnPlateau":
         scheduler = ReduceLROnPlateau(
@@ -96,13 +104,22 @@ def _setup_scheduler(optimizer, current_args):
     return scheduler
 
 
-def _maybe_set_epoch(loader, epoch):
+def _maybe_set_epoch(loader: DataLoader, epoch: int) -> None:
     """Set epoch for DistributedSampler if present."""
     if hasattr(loader, "sampler") and isinstance(loader.sampler, torch.utils.data.distributed.DistributedSampler):
         loader.sampler.set_epoch(epoch)
 
 
-def _training_epoch(model, train_loader, optimizer, criterion, device, scaler, epoch, num_epochs):
+def _training_epoch(
+    model: nn.Module,
+    train_loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: nn.Module,
+    device: torch.device,
+    scaler: torch.cuda.amp.GradScaler | None,
+    epoch: int,
+    num_epochs: int
+) -> float:
     """Execute one training epoch."""
     epoch_local_loss_sum = 0.0
     epoch_local_count = 0
@@ -186,22 +203,22 @@ def _training_epoch(model, train_loader, optimizer, criterion, device, scaler, e
     return epoch_train_loss
 
 def train_gnn(
-    model,
-    train_loader,
-    val_loader,
-    test_loader,
-    num_epochs,
-    learning_rate,
-    device,
-    early_stopping=False,
-    task_type='regression',
-    mixed_precision=False,
-    num_tasks=1,
-    multitask_weights=None,
-    preprocessing_pipeline=None,  # CHANGED: was std_scaler
-    is_ddp=False,
-    current_args=None
-):
+    model: nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    test_loader: DataLoader | None,
+    num_epochs: int,
+    learning_rate: float,
+    device: torch.device,
+    early_stopping: bool = False,
+    task_type: str = 'regression',
+    mixed_precision: bool = False,
+    num_tasks: int = 1,
+    multitask_weights: list[float] | None = None,
+    preprocessing_pipeline: Any | None = None,
+    is_ddp: bool = False,
+    current_args: Any | None = None
+) -> nn.Module:
     """
     Train a GNN model with properly implemented early stopping.
     """
@@ -339,15 +356,28 @@ def train_gnn(
     return model
 
 def _handle_epoch_end_fixed(
-    model, val_metrics, best_val_loss, patience_counter, best_model_state,
-    best_metrics, epoch, early_stopping, patience, current_args, optimizer,
-    device, epoch_train_loss, epoch_duration, task_type, is_ddp
-):
+    model: nn.Module,
+    val_metrics: dict[str, Any],
+    best_val_loss: float,
+    patience_counter: int,
+    best_model_state: dict[str, torch.Tensor] | None,
+    best_metrics: dict[str, Any] | None,
+    epoch: int,
+    early_stopping: bool,
+    patience: int,
+    current_args: Any,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    epoch_train_loss: float,
+    epoch_duration: float,
+    task_type: str,
+    is_ddp: bool
+) -> tuple[bool, float, int, dict[str, torch.Tensor] | None, dict[str, Any] | None, int]:
     """
     FIXED: Handle end-of-epoch processing with proper return values.
-    
+
     Returns:
-        Tuple of (stop_training, best_val_loss, patience_counter, 
+        Tuple of (stop_training, best_val_loss, patience_counter,
                  best_model_state, best_metrics, best_epoch)
     """
     stop_training = False
@@ -455,7 +485,13 @@ def _handle_epoch_end_fixed(
             best_model_state, best_metrics, best_epoch)
 
 
-def _print_epoch_progress(epoch, val_metrics, epoch_train_loss, optimizer, task_type):
+def _print_epoch_progress(
+    epoch: int,
+    val_metrics: dict[str, Any],
+    epoch_train_loss: float,
+    optimizer: torch.optim.Optimizer,
+    task_type: str
+) -> None:
     """Print training progress for the current epoch."""
     if task_type == 'multitask':
         logger.info(f"Epoch {epoch+1} | LR: {optimizer.param_groups[0]['lr']:.8f}")
