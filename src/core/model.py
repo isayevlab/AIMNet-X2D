@@ -74,6 +74,13 @@ class SimplifiedGNN(nn.Module):
         # Stereochemistry encoder (adds to atom features)
         self.stereo_encoder = StereochemistryEncoder(config.hidden_dim)
 
+        # Charge embedding (added to molecule features after pooling)
+        self.charge_embedding = nn.Sequential(
+            nn.Linear(1, config.hidden_dim),
+            nn.SiLU(),
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+        )
+
         # 3. Message passing layers
         self.message_passing_layers = nn.ModuleList()
         for layer_idx in range(config.num_message_passing_layers):
@@ -169,6 +176,13 @@ class SimplifiedGNN(nn.Module):
 
         # Pooling to molecule level [num_molecules, hidden_dim]
         x = self.pooling(x, batch.batch_idx)
+
+        # Add charge information if available
+        if batch.total_charges is not None:
+            charge_features = self.charge_embedding(
+                batch.total_charges.unsqueeze(-1)
+            )
+            x = x + charge_features
 
         # Feed-forward network [num_molecules, hidden_dim]
         x = self.ffn(x)

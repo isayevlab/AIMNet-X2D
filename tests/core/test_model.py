@@ -241,3 +241,43 @@ class TestSimplifiedGNN:
         assert not torch.allclose(output_with_chiral[3], x[3])  # Neighbor
         assert torch.allclose(output_with_chiral[0], x[0])  # Unchanged
         assert torch.allclose(output_with_chiral[4], x[4])  # Unchanged
+
+
+def test_model_with_total_charges():
+    """Test model handles total molecular charges."""
+    config = ModelConfig(hidden_dim=64, output_dim=1)
+    model = SimplifiedGNN(config)
+
+    batch = MolecularGraphBatch(
+        atom_types=torch.randint(0, 10, (20,), dtype=torch.int32),
+        degrees=torch.randint(0, 5, (20,), dtype=torch.int32),
+        hybridizations=torch.randint(0, 6, (20,), dtype=torch.int32),
+        hydrogen_counts=torch.randint(0, 5, (20,), dtype=torch.int32),
+        batch_idx=torch.tensor([0]*10 + [1]*10, dtype=torch.int64),
+        ptr=torch.tensor([0, 10, 20], dtype=torch.int64),
+        edge_indices=[torch.randint(0, 20, (2, 30))],
+        num_molecules=2,
+        total_charges=torch.tensor([0.0, -1.0], dtype=torch.float32),
+    )
+
+    output = model(batch)
+    assert output.shape == (2, 1)
+    assert not torch.isnan(output).any()
+
+
+def test_model_without_charges_still_works():
+    """Test model works when total_charges is None."""
+    config = ModelConfig(hidden_dim=64, output_dim=1)
+    model = SimplifiedGNN(config)
+
+    batch = MolecularGraphBatch(
+        atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+        batch_idx=torch.tensor([0]*10, dtype=torch.int64),
+        ptr=torch.tensor([0, 10], dtype=torch.int64),
+        edge_indices=[torch.randint(0, 10, (2, 15))],
+        num_molecules=1,
+        total_charges=None,  # No charges
+    )
+
+    output = model(batch)
+    assert output.shape == (1, 1)
