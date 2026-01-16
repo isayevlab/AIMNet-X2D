@@ -906,6 +906,65 @@ class TestEngineTrainingRefactor:
         assert not torch.allclose(initial_weight, engine.model.output_layer.weight)
 
 
+class TestEngineLossAggregation:
+    """Tests for loss aggregation consistency."""
+
+    def test_evaluate_batches_loss_weighted_by_elements(self):
+        """Test that loss is weighted by num_elements, not num_molecules."""
+        torch.manual_seed(42)  # For reproducibility
+
+        model_config = ModelConfig(hidden_dim=32, output_dim=2, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        # Create two batches with different molecule counts to make bug visible
+        # Batch 1: 1 molecule * 2 outputs = 2 elements
+        batch1 = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (5,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (5,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (5,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (5,), dtype=torch.int32),
+            batch_idx=torch.zeros(5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 5, (2, 8), dtype=torch.int64)],
+            num_molecules=1,
+            targets=torch.ones(1, 2),  # Known target
+        )
+
+        # Batch 2: 3 molecules * 2 outputs = 6 elements (intentionally different ratio)
+        batch2 = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (15,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (15,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (15,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (15,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5 + [2]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10, 15], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 15, (2, 20), dtype=torch.int64)],
+            num_molecules=3,
+            targets=torch.ones(3, 2),  # Known target
+        )
+
+        # Get individual losses
+        metrics1 = engine.evaluate(batch1)
+        metrics2 = engine.evaluate(batch2)
+
+        # Aggregate
+        agg_metrics = engine.evaluate_batches([batch1, batch2])
+
+        # CORRECT: Loss should be weighted by num_elements (2 + 6 = 8)
+        expected_loss_correct = (
+            metrics1["loss"] * metrics1["num_elements"] +
+            metrics2["loss"] * metrics2["num_elements"]
+        ) / (metrics1["num_elements"] + metrics2["num_elements"])
+
+        # The test verifies that loss is weighted by num_elements
+        # for consistency with MAE/RMSE weighting
+        assert abs(agg_metrics["loss"] - expected_loss_correct) < 1e-5, (
+            f"Loss aggregation should use num_elements weighting. "
+            f"Got {agg_metrics['loss']:.6f}, expected {expected_loss_correct:.6f}"
+        )
+
+
 class TestEngineMCDropout:
     """Tests for MC Dropout inference."""
 

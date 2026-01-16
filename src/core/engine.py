@@ -647,7 +647,8 @@ class Engine:
             n = batch.num_molecules
             metrics = self.evaluate(batch)
 
-            total_loss += metrics["loss"] * n
+            # Weight loss by num_elements for consistency with MAE/RMSE
+            total_loss += metrics["loss"] * metrics["num_elements"]
             total_abs_errors += metrics["abs_errors"]
             total_squared_errors += metrics["squared_errors"]
             total_elements += metrics["num_elements"]
@@ -660,7 +661,7 @@ class Engine:
             }
 
         return {
-            "loss": total_loss / total_molecules,
+            "loss": total_loss / total_elements if total_elements > 0 else 0.0,
             "mae": total_abs_errors / total_elements if total_elements > 0 else 0.0,
             "rmse": (total_squared_errors / total_elements) ** 0.5 if total_elements > 0 else 0.0,
             "total_molecules": total_molecules,
