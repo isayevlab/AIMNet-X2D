@@ -147,7 +147,7 @@ class Engine:
         self.model.train()
         batch = batch.to(self.device)
 
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
 
         # Forward pass with optional AMP
         if self.scaler is not None:
@@ -184,7 +184,7 @@ class Engine:
 
         return loss.item()
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def predict(self, batch: MolecularGraphBatch) -> torch.Tensor:
         """
         Run inference on batch.
@@ -206,7 +206,7 @@ class Engine:
 
         return predictions.cpu()
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def evaluate(self, batch: MolecularGraphBatch) -> dict[str, float]:
         """
         Evaluate model on batch.

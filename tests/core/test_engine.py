@@ -358,3 +358,25 @@ class TestEngineFullTraining:
 
         # Should stop before 100 epochs (patience 2 means stop after 3 epochs without improvement)
         assert len(history["train_loss"]) < 100
+
+
+class TestEnginePerformance:
+    """Tests for Engine performance optimizations."""
+
+    def test_predict_uses_inference_mode(self):
+        """Test that predict uses inference mode (no grad tracking)."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu")
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+        )
+
+        # Should not raise and should not require grad
+        predictions = engine.predict(batch)
+        assert not predictions.requires_grad
