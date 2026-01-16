@@ -317,6 +317,55 @@ class Engine:
 
         return predictions.cpu()
 
+    def predict_mc_dropout(
+        self,
+        batch: MolecularGraphBatch,
+        num_samples: int = 30,
+        return_stats: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """
+        Run MC Dropout inference for uncertainty estimation.
+
+        Performs multiple forward passes with dropout enabled to estimate
+        epistemic uncertainty.
+
+        Args:
+            batch: MolecularGraphBatch (targets optional)
+            num_samples: Number of MC samples
+            return_stats: If True, return (mean, std) instead of all samples
+
+        Returns:
+            If return_stats=False: Predictions [num_samples, num_molecules, output_dim]
+            If return_stats=True: Tuple of (mean, std), each [num_molecules, output_dim]
+        """
+        batch = batch.to(self.device)
+
+        # Keep model in train mode to enable dropout
+        self.model.train()
+
+        samples = []
+        with torch.no_grad():  # No gradients needed for inference
+            for _ in range(num_samples):
+                if self.scaler is not None:
+                    with torch.amp.autocast("cuda"):
+                        pred = self.model(batch)
+                else:
+                    pred = self.model(batch)
+                samples.append(pred.cpu())
+
+        # Restore eval mode
+        self.model.eval()
+
+        # Stack samples: [num_samples, num_molecules, output_dim]
+        all_samples = torch.stack(samples, dim=0)
+
+        if return_stats:
+            mean = all_samples.mean(dim=0)
+            std = all_samples.std(dim=0)
+            return mean, std
+
+        return all_samples
+
     @torch.inference_mode()
     def evaluate(self, batch: MolecularGraphBatch) -> dict[str, float]:
         """
