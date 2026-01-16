@@ -18,6 +18,7 @@ from .model_config import ModelConfig
 from .engine_config import EngineConfig
 from .featurizer import BatchFeaturizer
 from .preprocessing import PreprocessingPipeline
+from .losses import create_loss
 
 from src.utils.logging import get_logger
 
@@ -222,17 +223,8 @@ class Engine:
         return main_scheduler
 
     def _create_loss_function(self) -> nn.Module:
-        """Create loss function based on config."""
-        loss_type = self.config.loss_function
-
-        if loss_type == "mse":
-            return nn.MSELoss()
-        elif loss_type == "mae":
-            return nn.L1Loss()
-        elif loss_type == "huber":
-            return nn.HuberLoss()
-        else:
-            raise ValueError(f"Unknown loss function: {loss_type}")
+        """Create loss function from registry based on config."""
+        return create_loss(self.config.loss_function)
 
     def train_step(self, batch: MolecularGraphBatch) -> float:
         """

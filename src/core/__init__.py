@@ -21,6 +21,11 @@ from .preprocessing import (
     StandardScaler,
     PreprocessingPipeline,
 )
+from .losses import (
+    LOSS_REGISTRY,
+    register_loss,
+    create_loss,
+)
 from .layers import (
     scatter_add,
     ShellConvBlock,
@@ -44,6 +49,10 @@ __all__ = [
     "SAETransform",
     "StandardScaler",
     "PreprocessingPipeline",
+    # Losses
+    "LOSS_REGISTRY",
+    "register_loss",
+    "create_loss",
     # Layers
     "scatter_add",
     "ShellConvBlock",
