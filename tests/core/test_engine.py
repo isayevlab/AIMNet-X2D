@@ -767,3 +767,72 @@ class TestEngineAMPConsistency:
 
             # Verify autocast was called with "cuda"
             mock_autocast.assert_called_once_with("cuda")
+
+
+class TestEngineMultiOutputMetrics:
+    """Tests for multi-output metric computation."""
+
+    def test_evaluate_returns_element_counts(self):
+        """Test that evaluate returns element counts for proper aggregation."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=3, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 3),  # 3 outputs per molecule
+        )
+
+        metrics = engine.evaluate(batch)
+
+        # Should have raw sums for proper aggregation
+        assert "abs_errors" in metrics
+        assert "squared_errors" in metrics
+        assert "num_elements" in metrics
+        assert metrics["num_elements"] == 6  # 2 molecules * 3 outputs
+
+    def test_evaluate_batches_aggregates_correctly(self):
+        """Test weighted aggregation across batches with different sizes."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=2, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        # Small batch: 1 molecule, 2 outputs = 2 elements
+        small_batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (5,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (5,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (5,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (5,), dtype=torch.int32),
+            batch_idx=torch.zeros(5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 5, (2, 8), dtype=torch.int64)],
+            num_molecules=1,
+            targets=torch.randn(1, 2),
+        )
+
+        # Large batch: 5 molecules, 2 outputs = 10 elements
+        large_batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (25,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (25,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (25,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (25,), dtype=torch.int32),
+            batch_idx=torch.cat([torch.full((5,), i, dtype=torch.int64) for i in range(5)]),
+            ptr=torch.tensor([0, 5, 10, 15, 20, 25], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 25, (2, 40), dtype=torch.int64)],
+            num_molecules=5,
+            targets=torch.randn(5, 2),
+        )
+
+        metrics = engine.evaluate_batches([small_batch, large_batch])
+
+        assert metrics["total_molecules"] == 6
+        assert metrics["total_elements"] == 12  # 2 + 10
+        assert "mae" in metrics
+        assert "rmse" in metrics

@@ -336,10 +336,13 @@ class Engine:
             batch: MolecularGraphBatch with targets
 
         Returns:
-            Dict with 'loss', 'mae', 'rmse'
+            Dict with 'loss', 'mae', 'rmse', plus raw sums for aggregation
         """
         if batch.num_molecules == 0:
-            return {"loss": 0.0, "mae": 0.0, "rmse": 0.0}
+            return {
+                "loss": 0.0, "mae": 0.0, "rmse": 0.0,
+                "abs_errors": 0.0, "squared_errors": 0.0, "num_elements": 0,
+            }
         if batch.targets is None:
             raise ValueError("Evaluation batch must have targets")
 
@@ -355,15 +358,20 @@ class Engine:
             predictions = self.model(batch)
             loss = self.loss_fn(predictions, batch.targets)
 
-        # Compute metrics
+        # Compute metrics - return raw sums for proper aggregation
         diff = predictions - batch.targets
-        mae = diff.abs().mean().item()
-        rmse = diff.pow(2).mean().sqrt().item()
+        abs_errors = diff.abs().sum().item()
+        squared_errors = diff.pow(2).sum().item()
+        num_elements = diff.numel()
 
         return {
             "loss": loss.item(),
-            "mae": mae,
-            "rmse": rmse,
+            "mae": abs_errors / num_elements,
+            "rmse": (squared_errors / num_elements) ** 0.5,
+            # Raw values for aggregation
+            "abs_errors": abs_errors,
+            "squared_errors": squared_errors,
+            "num_elements": num_elements,
         }
 
     def step_scheduler(self, val_loss: float | None = None) -> None:
@@ -588,11 +596,12 @@ class Engine:
             batches: List of batches to evaluate
 
         Returns:
-            Weighted aggregated metrics ('loss', 'mae', 'rmse', 'total_molecules')
+            Weighted aggregated metrics
         """
         total_loss = 0.0
-        total_mae = 0.0
-        total_squared_error = 0.0
+        total_abs_errors = 0.0
+        total_squared_errors = 0.0
+        total_elements = 0
         total_molecules = 0
 
         for batch in batches:
@@ -600,17 +609,21 @@ class Engine:
             metrics = self.evaluate(batch)
 
             total_loss += metrics["loss"] * n
-            total_mae += metrics["mae"] * n
-            # For RMSE, accumulate squared errors (not averaged RMSEs)
-            total_squared_error += (metrics["rmse"] ** 2) * n
+            total_abs_errors += metrics["abs_errors"]
+            total_squared_errors += metrics["squared_errors"]
+            total_elements += metrics["num_elements"]
             total_molecules += n
 
         if total_molecules == 0:
-            return {"loss": 0.0, "mae": 0.0, "rmse": 0.0, "total_molecules": 0}
+            return {
+                "loss": 0.0, "mae": 0.0, "rmse": 0.0,
+                "total_molecules": 0, "total_elements": 0,
+            }
 
         return {
             "loss": total_loss / total_molecules,
-            "mae": total_mae / total_molecules,
-            "rmse": (total_squared_error / total_molecules) ** 0.5,
+            "mae": total_abs_errors / total_elements if total_elements > 0 else 0.0,
+            "rmse": (total_squared_errors / total_elements) ** 0.5 if total_elements > 0 else 0.0,
             "total_molecules": total_molecules,
+            "total_elements": total_elements,
         }
