@@ -450,27 +450,35 @@ class Engine:
         batches: list[MolecularGraphBatch],
     ) -> dict[str, float]:
         """
-        Evaluate model on multiple batches.
+        Evaluate model on multiple batches with proper weighting.
 
         Args:
             batches: List of batches to evaluate
 
         Returns:
-            Aggregated metrics ('loss', 'mae', 'rmse')
+            Weighted aggregated metrics ('loss', 'mae', 'rmse', 'total_molecules')
         """
         total_loss = 0.0
         total_mae = 0.0
-        total_rmse = 0.0
-        num_batches = len(batches)
+        total_squared_error = 0.0
+        total_molecules = 0
 
         for batch in batches:
+            n = batch.num_molecules
             metrics = self.evaluate(batch)
-            total_loss += metrics["loss"]
-            total_mae += metrics["mae"]
-            total_rmse += metrics["rmse"]
+
+            total_loss += metrics["loss"] * n
+            total_mae += metrics["mae"] * n
+            # For RMSE, accumulate squared errors (not averaged RMSEs)
+            total_squared_error += (metrics["rmse"] ** 2) * n
+            total_molecules += n
+
+        if total_molecules == 0:
+            return {"loss": 0.0, "mae": 0.0, "rmse": 0.0, "total_molecules": 0}
 
         return {
-            "loss": total_loss / num_batches,
-            "mae": total_mae / num_batches,
-            "rmse": total_rmse / num_batches,
+            "loss": total_loss / total_molecules,
+            "mae": total_mae / total_molecules,
+            "rmse": (total_squared_error / total_molecules) ** 0.5,
+            "total_molecules": total_molecules,
         }

@@ -360,6 +360,44 @@ class TestEngineFullTraining:
         assert len(history["train_loss"]) < 100
 
 
+class TestEngineWeightedMetrics:
+    """Tests for weighted metric aggregation."""
+
+    def test_evaluate_batches_weights_by_size(self):
+        """Test that evaluate_batches weights metrics by batch size."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu")
+        engine = Engine.from_config(model_config, engine_config)
+
+        # Create batches with different sizes
+        small_batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (5,), dtype=torch.int32),
+            batch_idx=torch.tensor([0, 0, 0, 0, 0], dtype=torch.int64),
+            ptr=torch.tensor([0, 5], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 5, (2, 8), dtype=torch.int64)],
+            num_molecules=1,
+            targets=torch.tensor([[0.0]]),
+        )
+
+        large_batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (50,), dtype=torch.int32),
+            batch_idx=torch.cat([torch.full((5,), i, dtype=torch.int64) for i in range(10)]),
+            ptr=torch.tensor([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 50, (2, 80), dtype=torch.int64)],
+            num_molecules=10,
+            targets=torch.randn(10, 1),
+        )
+
+        metrics = engine.evaluate_batches([small_batch, large_batch])
+
+        # Metrics should exist
+        assert "loss" in metrics
+        assert "mae" in metrics
+        assert "rmse" in metrics
+        assert "total_molecules" in metrics
+        assert metrics["total_molecules"] == 11
+
+
 class TestEnginePerformance:
     """Tests for Engine performance optimizations."""
 
