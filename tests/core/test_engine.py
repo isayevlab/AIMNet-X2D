@@ -593,3 +593,110 @@ class TestEngineLossFunctions:
 
         loss = engine.train_step(batch)
         assert isinstance(loss, float)
+
+
+class TestEngineGradientAccumulation:
+    """Tests for Engine gradient accumulation."""
+
+    def test_gradient_accumulation(self):
+        """Test gradient accumulation over multiple steps."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 1),
+        )
+
+        # Get initial weights
+        initial_weight = engine.model.output_layer.weight.clone()
+
+        # Accumulate gradients over 4 steps
+        accumulation_steps = 4
+        for step in range(accumulation_steps):
+            engine.train_step_accumulated(
+                batch,
+                accumulation_step=step,
+                accumulation_steps=accumulation_steps,
+            )
+
+        # Weights should have changed after accumulation completes
+        final_weight = engine.model.output_layer.weight
+        assert not torch.allclose(initial_weight, final_weight)
+
+    def test_gradient_accumulation_invalid_zero_steps(self):
+        """Test that zero accumulation_steps raises error."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 1),
+        )
+
+        with pytest.raises(ValueError, match="accumulation_steps must be positive"):
+            engine.train_step_accumulated(batch, accumulation_step=0, accumulation_steps=0)
+
+    def test_gradient_accumulation_invalid_step(self):
+        """Test that invalid accumulation_step raises error."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 1),
+        )
+
+        with pytest.raises(ValueError, match="accumulation_step must be in"):
+            engine.train_step_accumulated(batch, accumulation_step=5, accumulation_steps=4)
+
+    def test_gradient_accumulation_optimizer_steps_once(self):
+        """Test optimizer only steps at the end of accumulation."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 1),
+        )
+
+        initial_global_step = engine.global_step
+        accumulation_steps = 4
+
+        for step in range(accumulation_steps):
+            engine.train_step_accumulated(batch, step, accumulation_steps)
+
+        # Global step should only increment once (at the final accumulation step)
+        assert engine.global_step == initial_global_step + 1

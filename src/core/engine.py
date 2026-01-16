@@ -226,6 +226,85 @@ class Engine:
 
         return loss.item()
 
+    def train_step_accumulated(
+        self,
+        batch: MolecularGraphBatch,
+        accumulation_step: int = 0,
+        accumulation_steps: int = 1,
+    ) -> float:
+        """
+        Perform training step with gradient accumulation.
+
+        Args:
+            batch: MolecularGraphBatch with targets
+            accumulation_step: Current step in accumulation (0-indexed)
+            accumulation_steps: Total number of accumulation steps
+
+        Returns:
+            Loss value as float (unscaled)
+
+        Raises:
+            ValueError: If batch is empty or missing targets
+        """
+        if batch.num_molecules == 0:
+            raise ValueError("Cannot train on empty batch")
+        if batch.targets is None:
+            raise ValueError("Training batch must have targets")
+        if accumulation_steps <= 0:
+            raise ValueError(f"accumulation_steps must be positive, got {accumulation_steps}")
+        if accumulation_step < 0 or accumulation_step >= accumulation_steps:
+            raise ValueError(
+                f"accumulation_step must be in [0, {accumulation_steps - 1}], got {accumulation_step}"
+            )
+
+        self.model.train()
+        batch = batch.to(self.device)
+
+        # Only zero gradients at start of accumulation
+        if accumulation_step == 0:
+            self.optimizer.zero_grad(set_to_none=True)
+
+        # Scale loss for accumulation
+        scale_factor = 1.0 / accumulation_steps
+
+        if self.scaler is not None:
+            with torch.amp.autocast("cuda"):
+                predictions = self.model(batch)
+                loss = self.loss_fn(predictions, batch.targets)
+                scaled_loss = loss * scale_factor
+
+            self.scaler.scale(scaled_loss).backward()
+
+            # Only step optimizer at end of accumulation
+            if accumulation_step == accumulation_steps - 1:
+                if self.config.gradient_clip:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.gradient_clip,
+                    )
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                self.global_step += 1
+        else:
+            predictions = self.model(batch)
+            loss = self.loss_fn(predictions, batch.targets)
+            scaled_loss = loss * scale_factor
+
+            scaled_loss.backward()
+
+            # Only step optimizer at end of accumulation
+            if accumulation_step == accumulation_steps - 1:
+                if self.config.gradient_clip:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.gradient_clip,
+                    )
+                self.optimizer.step()
+                self.global_step += 1
+
+        return loss.item()  # Return unscaled loss for logging
+
     @torch.inference_mode()
     def predict(self, batch: MolecularGraphBatch) -> torch.Tensor:
         """
