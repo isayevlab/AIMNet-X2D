@@ -236,3 +236,27 @@ class TestFeedForwardNetwork:
 
         assert output.shape == (batch_size, output_dim)
         assert not torch.isnan(output).any()
+
+
+class TestAttentionPoolingPerformance:
+    """Performance tests for AttentionPooling."""
+
+    def test_pooling_accepts_num_molecules_param(self):
+        """Test that pooling can accept num_molecules to avoid .item() call."""
+        pooling = AttentionPooling(input_dim=64, num_heads=4)
+        x = torch.randn(10, 64)
+        batch_idx = torch.tensor([0, 0, 0, 0, 1, 1, 1, 2, 2, 2])
+
+        # Should work with explicit num_molecules
+        output = pooling(x, batch_idx, num_molecules=3)
+        assert output.shape == (3, 64)
+
+    def test_pooling_backward_compatible(self):
+        """Test that pooling still works without num_molecules."""
+        pooling = AttentionPooling(input_dim=64, num_heads=4)
+        x = torch.randn(10, 64)
+        batch_idx = torch.tensor([0, 0, 0, 0, 1, 1, 1, 2, 2, 2])
+
+        # Should still work without num_molecules (backward compatible)
+        output = pooling(x, batch_idx)
+        assert output.shape == (3, 64)

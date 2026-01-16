@@ -246,6 +246,7 @@ class AttentionPooling(nn.Module):
         self,
         x: Tensor,
         batch_idx: Tensor,
+        num_molecules: int | None = None,
     ) -> Tensor:
         """
         Forward pass through attention pooling.
@@ -253,12 +254,16 @@ class AttentionPooling(nn.Module):
         Args:
             x: Atom features [num_atoms, input_dim]
             batch_idx: Molecule index for each atom [num_atoms]
+            num_molecules: Number of molecules (optional, avoids .item() call)
 
         Returns:
             Molecule features [num_molecules, input_dim]
         """
         num_atoms = x.shape[0]
-        num_molecules = batch_idx.max().item() + 1
+
+        # Use provided num_molecules or compute it (slower due to .item())
+        if num_molecules is None:
+            num_molecules = int(batch_idx.max().item()) + 1
 
         # Compute attention scores for all heads [num_atoms, num_heads]
         attention_scores = self.attention_linear(x) / self.temperature

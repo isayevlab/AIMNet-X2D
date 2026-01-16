@@ -175,7 +175,7 @@ class SimplifiedGNN(nn.Module):
             x = mp_layer(x, batch.edge_indices)
 
         # Pooling to molecule level [num_molecules, hidden_dim]
-        x = self.pooling(x, batch.batch_idx)
+        x = self.pooling(x, batch.batch_idx, num_molecules=batch.num_molecules)
 
         # Add charge information if available
         if batch.total_charges is not None:
