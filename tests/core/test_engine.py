@@ -836,3 +836,56 @@ class TestEngineMultiOutputMetrics:
         assert metrics["total_elements"] == 12  # 2 + 10
         assert "mae" in metrics
         assert "rmse" in metrics
+
+
+class TestEngineTrainingRefactor:
+    """Tests for refactored training methods."""
+
+    def test_train_step_uses_forward_backward(self):
+        """Test that train_step still works after refactor."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 1),
+        )
+
+        initial_weight = engine.model.output_layer.weight.clone()
+        loss = engine.train_step(batch)
+
+        assert isinstance(loss, float)
+        assert not torch.allclose(initial_weight, engine.model.output_layer.weight)
+
+    def test_accumulated_uses_forward_backward(self):
+        """Test that train_step_accumulated still works after refactor."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 1),
+        )
+
+        initial_weight = engine.model.output_layer.weight.clone()
+
+        for step in range(4):
+            engine.train_step_accumulated(batch, step, 4)
+
+        assert not torch.allclose(initial_weight, engine.model.output_layer.weight)

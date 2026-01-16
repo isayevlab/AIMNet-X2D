@@ -117,6 +117,69 @@ class Engine:
             )
         return self._featurizer
 
+    def _validate_training_batch(self, batch: MolecularGraphBatch) -> None:
+        """Validate batch for training operations.
+
+        Args:
+            batch: Batch to validate
+
+        Raises:
+            ValueError: If batch is empty or missing targets
+        """
+        if batch.num_molecules == 0:
+            raise ValueError("Cannot train on empty batch")
+        if batch.targets is None:
+            raise ValueError("Training batch must have targets")
+
+    def _forward_backward(
+        self,
+        batch: MolecularGraphBatch,
+        loss_scale: float = 1.0,
+    ) -> torch.Tensor:
+        """Perform forward pass and backward pass.
+
+        Args:
+            batch: Training batch (already on device)
+            loss_scale: Scale factor for loss (for gradient accumulation)
+
+        Returns:
+            Unscaled loss tensor
+        """
+        if self.scaler is not None:
+            with torch.amp.autocast("cuda"):
+                predictions = self.model(batch)
+                loss = self.loss_fn(predictions, batch.targets)
+                scaled_loss = loss * loss_scale
+
+            self.scaler.scale(scaled_loss).backward()
+        else:
+            predictions = self.model(batch)
+            loss = self.loss_fn(predictions, batch.targets)
+            scaled_loss = loss * loss_scale
+
+            scaled_loss.backward()
+
+        return loss
+
+    def _optimizer_step(self) -> None:
+        """Perform optimizer step with gradient clipping."""
+        if self.scaler is not None:
+            if self.config.gradient_clip:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.gradient_clip,
+                )
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            if self.config.gradient_clip:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.gradient_clip,
+                )
+            self.optimizer.step()
+
     def _create_scheduler(self):
         """Create learning rate scheduler based on config with optional warmup."""
         if self.config.scheduler == "none":
@@ -181,46 +244,14 @@ class Engine:
         Returns:
             Loss value as float
         """
-        if batch.num_molecules == 0:
-            raise ValueError("Cannot train on empty batch")
-        if batch.targets is None:
-            raise ValueError("Training batch must have targets")
+        self._validate_training_batch(batch)
 
         self.model.train()
         batch = batch.to(self.device)
 
         self.optimizer.zero_grad(set_to_none=True)
-
-        # Forward pass with optional AMP
-        if self.scaler is not None:
-            with torch.amp.autocast("cuda"):
-                predictions = self.model(batch)
-                loss = self.loss_fn(predictions, batch.targets)
-
-            self.scaler.scale(loss).backward()
-
-            if self.config.gradient_clip:
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config.gradient_clip,
-                )
-
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            predictions = self.model(batch)
-            loss = self.loss_fn(predictions, batch.targets)
-
-            loss.backward()
-
-            if self.config.gradient_clip:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config.gradient_clip,
-                )
-
-            self.optimizer.step()
+        loss = self._forward_backward(batch, loss_scale=1.0)
+        self._optimizer_step()
 
         self.global_step += 1
 
@@ -246,10 +277,8 @@ class Engine:
         Raises:
             ValueError: If batch is empty or missing targets
         """
-        if batch.num_molecules == 0:
-            raise ValueError("Cannot train on empty batch")
-        if batch.targets is None:
-            raise ValueError("Training batch must have targets")
+        self._validate_training_batch(batch)
+
         if accumulation_steps <= 0:
             raise ValueError(f"accumulation_steps must be positive, got {accumulation_steps}")
         if accumulation_step < 0 or accumulation_step >= accumulation_steps:
@@ -264,44 +293,13 @@ class Engine:
         if accumulation_step == 0:
             self.optimizer.zero_grad(set_to_none=True)
 
-        # Scale loss for accumulation
-        scale_factor = 1.0 / accumulation_steps
+        # Forward and backward with scaled loss
+        loss = self._forward_backward(batch, loss_scale=1.0 / accumulation_steps)
 
-        if self.scaler is not None:
-            with torch.amp.autocast("cuda"):
-                predictions = self.model(batch)
-                loss = self.loss_fn(predictions, batch.targets)
-                scaled_loss = loss * scale_factor
-
-            self.scaler.scale(scaled_loss).backward()
-
-            # Only step optimizer at end of accumulation
-            if accumulation_step == accumulation_steps - 1:
-                if self.config.gradient_clip:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.config.gradient_clip,
-                    )
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                self.global_step += 1
-        else:
-            predictions = self.model(batch)
-            loss = self.loss_fn(predictions, batch.targets)
-            scaled_loss = loss * scale_factor
-
-            scaled_loss.backward()
-
-            # Only step optimizer at end of accumulation
-            if accumulation_step == accumulation_steps - 1:
-                if self.config.gradient_clip:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.config.gradient_clip,
-                    )
-                self.optimizer.step()
-                self.global_step += 1
+        # Only step optimizer at end of accumulation
+        if accumulation_step == accumulation_steps - 1:
+            self._optimizer_step()
+            self.global_step += 1
 
         return loss.item()  # Return unscaled loss for logging
 
