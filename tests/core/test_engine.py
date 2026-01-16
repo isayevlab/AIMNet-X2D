@@ -1045,3 +1045,62 @@ class TestEngineMCDropout:
         # Should have variance from dropout
         std = predictions.std(dim=0)
         assert std.mean() > 0
+
+    def test_predict_mc_dropout_with_evidential(self):
+        """Test MC Dropout extracts mu from evidential outputs."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=4, num_shells=2, dropout=0.1)
+        engine_config = EngineConfig(
+            device="cpu",
+            use_amp=False,
+            loss_function="evidential",
+            warmup_epochs=0
+        )
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+        )
+
+        # MC Dropout with evidential model
+        predictions = engine.predict_mc_dropout(batch, num_samples=10)
+
+        # Should extract mu only, not all 4 params
+        assert predictions.shape == (10, 2, 1)  # [samples, molecules, 1] not [samples, molecules, 4]
+
+        # Should have variance
+        std = predictions.std(dim=0)
+        assert std.mean() > 0
+
+    def test_predict_mc_dropout_evidential_multi_output(self):
+        """Test MC Dropout with multi-output evidential model."""
+        # 2 tasks, model outputs 8 parameters (4 per task)
+        model_config = ModelConfig(hidden_dim=32, output_dim=8, num_shells=2, dropout=0.1)
+        engine_config = EngineConfig(
+            device="cpu",
+            use_amp=False,
+            loss_function="evidential",
+            warmup_epochs=0
+        )
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+        )
+
+        # Should extract 2 mu values (one per task)
+        predictions = engine.predict_mc_dropout(batch, num_samples=10)
+        assert predictions.shape == (10, 2, 2)  # [samples, molecules, 2 tasks]

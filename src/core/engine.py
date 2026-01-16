@@ -226,6 +226,37 @@ class Engine:
         """Create loss function from registry based on config."""
         return create_loss(self.config.loss_function, **self.config.loss_kwargs)
 
+    def _is_evidential_loss(self) -> bool:
+        """Check if current loss function is evidential.
+
+        Returns:
+            True if using evidential loss, False otherwise.
+        """
+        return self.config.loss_function == "evidential"
+
+    def _extract_evidential_mu(self, predictions: torch.Tensor) -> torch.Tensor:
+        """Extract mu (mean predictions) from evidential outputs.
+
+        For evidential regression, the model outputs [batch, num_tasks * 4]
+        containing (mu, v, alpha, beta) for each task. This extracts just mu.
+
+        Args:
+            predictions: Raw model predictions [batch, num_tasks * 4]
+
+        Returns:
+            Extracted mu values [batch, num_tasks]
+        """
+        batch_size = predictions.shape[0]
+        num_tasks = predictions.shape[1] // 4
+
+        # Reshape to [batch, num_tasks, 4]
+        reshaped = predictions.view(batch_size, num_tasks, 4)
+
+        # Extract mu (index 0)
+        mu = reshaped[:, :, 0]  # [batch, num_tasks]
+
+        return mu
+
     def train_step(self, batch: MolecularGraphBatch) -> float:
         """
         Perform single training step.
@@ -327,8 +358,8 @@ class Engine:
         Run MC Dropout inference for uncertainty estimation.
 
         Performs multiple forward passes with dropout enabled to estimate
-        epistemic uncertainty. Optimized to batch samples on GPU before
-        transferring to CPU.
+        epistemic uncertainty. For evidential models, extracts mu (mean)
+        from the 4-parameter outputs.
 
         Args:
             batch: MolecularGraphBatch (targets optional)
@@ -336,11 +367,15 @@ class Engine:
             return_stats: If True, return (mean, std) instead of all samples
 
         Returns:
-            If return_stats=False: Predictions [num_samples, num_molecules, output_dim]
-            If return_stats=True: Tuple of (mean, std), each [num_molecules, output_dim]
+            If return_stats=False: Predictions [num_samples, num_molecules, num_tasks]
+            If return_stats=True: Tuple of (mean, std), each [num_molecules, num_tasks]
         """
         batch = batch.to(self.device)
         output_dim = self.model.config.output_dim
+
+        # For evidential models, determine number of tasks
+        is_evidential = self._is_evidential_loss()
+        num_tasks = output_dim // 4 if is_evidential else output_dim
 
         # Keep model in train mode to enable dropout
         self.model.train()
@@ -350,7 +385,7 @@ class Engine:
             samples = torch.empty(
                 num_samples,
                 batch.num_molecules,
-                output_dim,
+                num_tasks,
                 device=self.device,
                 dtype=torch.float32
             )
@@ -360,10 +395,20 @@ class Engine:
                 if self.scaler is not None:
                     with torch.amp.autocast("cuda"):
                         for i in range(num_samples):
-                            samples[i] = self.model(batch)
+                            raw_pred = self.model(batch)
+                            # Extract mu for evidential models
+                            if is_evidential:
+                                samples[i] = self._extract_evidential_mu(raw_pred)
+                            else:
+                                samples[i] = raw_pred
                 else:
                     for i in range(num_samples):
-                        samples[i] = self.model(batch)
+                        raw_pred = self.model(batch)
+                        # Extract mu for evidential models
+                        if is_evidential:
+                            samples[i] = self._extract_evidential_mu(raw_pred)
+                        else:
+                            samples[i] = raw_pred
 
             # Single GPU->CPU transfer for all samples
             samples = samples.cpu()
