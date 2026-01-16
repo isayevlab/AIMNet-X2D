@@ -61,6 +61,9 @@ class Engine:
         if config.compile_model and hasattr(torch, 'compile'):
             self.model = torch.compile(self.model)
 
+        # Validate loss-model compatibility
+        self._validate_loss_model_compatibility()
+
         # Setup optimizer
         self.optimizer = AdamW(
             self.model.parameters(),
@@ -107,6 +110,21 @@ class Engine:
         """
         model = SimplifiedGNN(model_config)
         return cls(model=model, config=engine_config, preprocessing=preprocessing)
+
+    def _validate_loss_model_compatibility(self) -> None:
+        """Validate that loss function is compatible with model output_dim.
+
+        Raises:
+            ValueError: If incompatible configuration detected.
+        """
+        if self.config.loss_function == "evidential":
+            output_dim = self.model.config.output_dim
+            if output_dim % 4 != 0:
+                raise ValueError(
+                    f"EvidentialLoss requires output_dim to be multiple of 4 "
+                    f"(got {output_dim}). Each task needs 4 parameters: "
+                    f"mu, v, alpha, beta."
+                )
 
     @property
     def featurizer(self) -> BatchFeaturizer:

@@ -1002,6 +1002,36 @@ class TestEngineReducedSyncPoints:
         assert not torch.isnan(torch.tensor(metrics["rmse"]))
 
 
+class TestEngineLossOutputCompatibility:
+    """Tests for loss-output compatibility validation."""
+
+    def test_engine_validates_evidential_output_dim(self):
+        """Test Engine validates output_dim for evidential loss."""
+        # output_dim must be multiple of 4 for evidential
+        model_config = ModelConfig(hidden_dim=32, output_dim=3, num_shells=2)
+        engine_config = EngineConfig(loss_function="evidential")
+
+        with pytest.raises(ValueError, match="output_dim to be multiple of 4"):
+            Engine.from_config(model_config, engine_config)
+
+    def test_engine_accepts_valid_evidential_output_dim(self):
+        """Test Engine accepts valid output_dim for evidential loss."""
+        # output_dim=4 is valid (1 task)
+        model_config = ModelConfig(hidden_dim=32, output_dim=4, num_shells=2)
+        engine_config = EngineConfig(loss_function="evidential", device="cpu")
+
+        engine = Engine.from_config(model_config, engine_config)
+        assert engine is not None
+
+    def test_engine_accepts_non_evidential_any_output_dim(self):
+        """Test Engine accepts any output_dim for non-evidential losses."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=3, num_shells=2)
+        engine_config = EngineConfig(loss_function="mse", device="cpu")
+
+        engine = Engine.from_config(model_config, engine_config)
+        assert engine is not None
+
+
 class TestEngineMCDropout:
     """Tests for MC Dropout inference."""
 
