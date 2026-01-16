@@ -1,16 +1,26 @@
 """
-Core module for GPU-native molecular processing.
+Core module for GPU-native molecular GNN.
 
-This module contains the fundamental data structures and operations
-optimized for batch processing on GPU.
+This module provides the refactored architecture with:
+- MolecularGraphBatch: Batched molecular data
+- BatchFeaturizer: SMILES to batch conversion
+- SimplifiedGNN: Main GNN model
+- Engine: Unified training and inference
+- Preprocessing: SAE and scaling transforms
 """
 
 from .batch import MolecularGraphBatch
 from .batch_adapter import BatchAdapter
-from .engine_config import EngineConfig
-from .model_config import ModelConfig
-from .preprocessing import SAETransform, StandardScaler, PreprocessingPipeline
 from .featurizer import BatchFeaturizer
+from .model import SimplifiedGNN
+from .model_config import ModelConfig
+from .engine import Engine
+from .engine_config import EngineConfig
+from .preprocessing import (
+    SAETransform,
+    StandardScaler,
+    PreprocessingPipeline,
+)
 from .layers import (
     scatter_add,
     ShellConvBlock,
@@ -18,8 +28,6 @@ from .layers import (
     FeedForwardNetwork,
     StereochemistryEncoder,
 )
-from .model import SimplifiedGNN
-from .engine import Engine
 
 __all__ = [
     # Data
@@ -29,6 +37,8 @@ __all__ = [
     # Model
     "SimplifiedGNN",
     "ModelConfig",
+    # Engine
+    "Engine",
     "EngineConfig",
     # Preprocessing
     "SAETransform",
@@ -40,6 +50,4 @@ __all__ = [
     "AttentionPooling",
     "FeedForwardNetwork",
     "StereochemistryEncoder",
-    # Engine
-    "Engine",
 ]
