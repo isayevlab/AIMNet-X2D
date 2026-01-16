@@ -418,3 +418,81 @@ class TestEnginePerformance:
         # Should not raise and should not require grad
         predictions = engine.predict(batch)
         assert not predictions.requires_grad
+
+
+class TestEngineValidation:
+    """Tests for Engine input validation."""
+
+    def test_train_step_requires_targets(self):
+        """Test that train_step raises for batch without targets."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=None,  # No targets!
+        )
+
+        with pytest.raises(ValueError, match="targets"):
+            engine.train_step(batch)
+
+    def test_train_step_rejects_empty_batch(self):
+        """Test that train_step raises for empty batch."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.tensor([], dtype=torch.int32),
+            batch_idx=torch.tensor([], dtype=torch.int64),
+            ptr=torch.tensor([0], dtype=torch.int64),
+            edge_indices=[torch.zeros(2, 0, dtype=torch.int64)],
+            num_molecules=0,
+            targets=torch.zeros(0, 1),
+        )
+
+        with pytest.raises(ValueError, match="empty"):
+            engine.train_step(batch)
+
+    def test_evaluate_requires_targets(self):
+        """Test that evaluate raises for batch without targets."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu")
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=None,
+        )
+
+        with pytest.raises(ValueError, match="targets"):
+            engine.evaluate(batch)
+
+    def test_evaluate_empty_batch_returns_zeros(self):
+        """Test that evaluate returns zeros for empty batch."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu")
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.tensor([], dtype=torch.int32),
+            batch_idx=torch.tensor([], dtype=torch.int64),
+            ptr=torch.tensor([0], dtype=torch.int64),
+            edge_indices=[torch.zeros(2, 0, dtype=torch.int64)],
+            num_molecules=0,
+            targets=torch.zeros(0, 1),
+        )
+
+        metrics = engine.evaluate(batch)
+        assert metrics["loss"] == 0.0
+        assert metrics["mae"] == 0.0
+        assert metrics["rmse"] == 0.0

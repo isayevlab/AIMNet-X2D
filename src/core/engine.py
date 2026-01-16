@@ -144,6 +144,11 @@ class Engine:
         Returns:
             Loss value as float
         """
+        if batch.num_molecules == 0:
+            raise ValueError("Cannot train on empty batch")
+        if batch.targets is None:
+            raise ValueError("Training batch must have targets")
+
         self.model.train()
         batch = batch.to(self.device)
 
@@ -217,6 +222,11 @@ class Engine:
         Returns:
             Dict with 'loss', 'mae', 'rmse'
         """
+        if batch.num_molecules == 0:
+            return {"loss": 0.0, "mae": 0.0, "rmse": 0.0}
+        if batch.targets is None:
+            raise ValueError("Evaluation batch must have targets")
+
         self.model.eval()
         batch = batch.to(self.device)
 
