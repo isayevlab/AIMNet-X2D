@@ -19,6 +19,7 @@ from .layers import (
     StereochemistryEncoder,
 )
 from .model import SimplifiedGNN
+from .engine import Engine
 
 __all__ = [
     # Data
@@ -39,4 +40,6 @@ __all__ = [
     "AttentionPooling",
     "FeedForwardNetwork",
     "StereochemistryEncoder",
+    # Engine
+    "Engine",
 ]
