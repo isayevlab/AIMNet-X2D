@@ -101,30 +101,47 @@ class EvidentialLoss(nn.Module):
         """Compute evidential loss.
 
         Args:
-            pred: Predictions [batch, 4] - (mu, v, alpha, beta)
-            target: Targets [batch, 1]
+            pred: Predictions [batch, num_tasks * 4] - (mu, v, alpha, beta) for each task
+            target: Targets [batch, num_tasks]
 
         Returns:
             Scalar loss
         """
-        # Unpack predictions
-        mu = pred[:, 0:1]
-        v = torch.nn.functional.softplus(pred[:, 1:2]) + 1e-6
-        alpha = torch.nn.functional.softplus(pred[:, 2:3]) + 1.0
-        beta = torch.nn.functional.softplus(pred[:, 3:4]) + 1e-6
+        batch_size = pred.shape[0]
+        num_tasks = target.shape[1]
 
-        # NLL loss
+        # Validate shape compatibility
+        expected_pred_dim = num_tasks * 4
+        if pred.shape[1] != expected_pred_dim:
+            raise ValueError(
+                f"Expected pred shape [batch, {expected_pred_dim}] for {num_tasks} tasks, "
+                f"got {pred.shape}"
+            )
+
+        # Reshape predictions: [batch, num_tasks, 4]
+        pred_reshaped = pred.view(batch_size, num_tasks, 4)
+
+        # Unpack predictions for all tasks
+        mu = pred_reshaped[:, :, 0:1]  # [batch, num_tasks, 1]
+        v = torch.nn.functional.softplus(pred_reshaped[:, :, 1:2]) + 1e-6
+        alpha = torch.nn.functional.softplus(pred_reshaped[:, :, 2:3]) + 1.0
+        beta = torch.nn.functional.softplus(pred_reshaped[:, :, 3:4]) + 1e-6
+
+        # Reshape target to match: [batch, num_tasks, 1]
+        target_reshaped = target.unsqueeze(-1)
+
+        # NLL loss (vectorized over all tasks)
         twoBlambda = 2 * beta * (1 + v)
         nll = (
             0.5 * torch.log(torch.pi / v)
             - alpha * torch.log(twoBlambda)
-            + (alpha + 0.5) * torch.log(v * (target - mu) ** 2 + twoBlambda)
+            + (alpha + 0.5) * torch.log(v * (target_reshaped - mu) ** 2 + twoBlambda)
             + torch.lgamma(alpha)
             - torch.lgamma(alpha + 0.5)
         )
 
         # Regularization on evidence
-        reg = (2 * v + alpha) * torch.abs(target - mu)
+        reg = (2 * v + alpha) * torch.abs(target_reshaped - mu)
 
         loss = nll + self.coeff * reg
         return loss.mean()

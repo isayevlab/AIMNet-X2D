@@ -139,3 +139,39 @@ class TestLossRegistry:
 
         loss = loss_fn(pred, target)
         assert loss > 0  # Loss should be positive
+
+    def test_evidential_loss_multi_output(self):
+        """Test evidential loss with multiple outputs."""
+        loss_fn = create_loss("evidential")
+
+        # 2 tasks, each needs 4 parameters (mu, v, alpha, beta)
+        pred = torch.randn(10, 8)  # [batch, 2 * 4]
+        target = torch.randn(10, 2)  # [batch, 2 tasks]
+
+        loss = loss_fn(pred, target)
+
+        assert loss.shape == ()
+        assert not torch.isnan(loss)
+        assert loss.item() > 0
+
+        # Test that changing second task parameters affects loss
+        # (verifies we're actually using all prediction columns)
+        pred_modified = pred.clone()
+        pred_modified[:, 4:8] = pred_modified[:, 4:8] * 10  # Modify second task params
+        loss_modified = loss_fn(pred_modified, target)
+
+        # Loss should change if we're properly using all parameters
+        assert not torch.allclose(loss, loss_modified, rtol=1e-4)
+
+    def test_evidential_loss_single_output_backward_compat(self):
+        """Test evidential loss still works with single output."""
+        loss_fn = create_loss("evidential")
+
+        # Single task
+        pred = torch.randn(10, 4)  # [batch, 4]
+        target = torch.randn(10, 1)  # [batch, 1]
+
+        loss = loss_fn(pred, target)
+
+        assert loss.shape == ()
+        assert not torch.isnan(loss)
