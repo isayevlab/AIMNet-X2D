@@ -66,3 +66,29 @@ class TestEngineConfig:
         config = EngineConfig(loss_function="huber")
         d = config.to_dict()
         assert d["loss_function"] == "huber"
+
+    def test_loss_kwargs_default(self):
+        """Test loss_kwargs defaults to empty dict."""
+        config = EngineConfig()
+        assert config.loss_kwargs == {}
+
+    def test_loss_kwargs_custom(self):
+        """Test loss_kwargs can be customized."""
+        config = EngineConfig(
+            loss_function="evidential",
+            loss_kwargs={"coeff": 0.05}
+        )
+        assert config.loss_kwargs == {"coeff": 0.05}
+
+    def test_to_dict_includes_loss_kwargs(self):
+        """Test loss_kwargs serialization."""
+        config = EngineConfig(loss_kwargs={"coeff": 0.1})
+        d = config.to_dict()
+        assert "loss_kwargs" in d
+        assert d["loss_kwargs"] == {"coeff": 0.1}
+
+    def test_from_dict_restores_loss_kwargs(self):
+        """Test loss_kwargs deserialization."""
+        d = {"loss_function": "huber", "loss_kwargs": {"delta": 1.5}}
+        config = EngineConfig.from_dict(d)
+        assert config.loss_kwargs == {"delta": 1.5}

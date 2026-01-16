@@ -551,6 +551,21 @@ class TestEngineWarmup:
 class TestEngineLossFunctions:
     """Tests for Engine loss function configuration."""
 
+    def test_engine_with_loss_kwargs(self):
+        """Test Engine respects loss_kwargs."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=4, num_shells=2)
+        engine_config = EngineConfig(
+            device="cpu",
+            use_amp=False,
+            loss_function="evidential",
+            loss_kwargs={"coeff": 0.05}
+        )
+        engine = Engine.from_config(model_config, engine_config)
+
+        # Verify loss function has correct config
+        assert hasattr(engine.loss_fn, 'coeff')
+        assert engine.loss_fn.coeff == 0.05
+
     def test_engine_with_mae_loss(self):
         """Test Engine with MAE loss function."""
         model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)

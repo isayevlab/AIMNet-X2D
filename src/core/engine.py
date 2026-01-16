@@ -224,7 +224,7 @@ class Engine:
 
     def _create_loss_function(self) -> nn.Module:
         """Create loss function from registry based on config."""
-        return create_loss(self.config.loss_function)
+        return create_loss(self.config.loss_function, **self.config.loss_kwargs)
 
     def train_step(self, batch: MolecularGraphBatch) -> float:
         """

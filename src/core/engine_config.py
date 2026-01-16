@@ -5,7 +5,7 @@ Provides a unified configuration interface for the Engine class.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import torch
@@ -31,6 +31,7 @@ class EngineConfig:
         use_amp: Use automatic mixed precision.
         compile_model: Use torch.compile().
         loss_function: Loss function type ('mse', 'mae', 'huber', or 'evidential').
+        loss_kwargs: Additional kwargs passed to loss function constructor.
     """
 
     # Optimizer
@@ -49,6 +50,7 @@ class EngineConfig:
 
     # Loss
     loss_function: Literal["mse", "mae", "huber", "evidential"] = "mse"
+    loss_kwargs: dict[str, Any] = field(default_factory=dict)
 
     # Hardware
     device: str = "auto"
@@ -96,6 +98,7 @@ class EngineConfig:
             "early_stopping_patience": self.early_stopping_patience,
             "scheduler": self.scheduler,
             "loss_function": self.loss_function,
+            "loss_kwargs": self.loss_kwargs,
             "device": self.device,
             "num_workers": self.num_workers,
             "use_amp": self.use_amp,
