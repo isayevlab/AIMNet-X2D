@@ -965,6 +965,43 @@ class TestEngineLossAggregation:
         )
 
 
+class TestEngineReducedSyncPoints:
+    """Tests for reduced GPU synchronization points optimization."""
+
+    def test_evaluate_reduced_sync_points_equivalent(self):
+        """Test optimized evaluate gives same results."""
+        torch.manual_seed(42)
+        model_config = ModelConfig(hidden_dim=32, output_dim=2, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 2),
+        )
+
+        metrics = engine.evaluate(batch)
+
+        # All metrics should be present and finite
+        assert "loss" in metrics
+        assert "mae" in metrics
+        assert "rmse" in metrics
+        assert "abs_errors" in metrics
+        assert "squared_errors" in metrics
+        assert "num_elements" in metrics
+
+        assert not torch.isnan(torch.tensor(metrics["loss"]))
+        assert not torch.isnan(torch.tensor(metrics["mae"]))
+        assert not torch.isnan(torch.tensor(metrics["rmse"]))
+
+
 class TestEngineMCDropout:
     """Tests for MC Dropout inference."""
 

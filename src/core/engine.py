@@ -455,14 +455,26 @@ class Engine:
             predictions = self.model(batch)
             loss = self.loss_fn(predictions, batch.targets)
 
-        # Compute metrics - return raw sums for proper aggregation
+        # Compute metrics - batch reductions together to minimize sync points
         diff = predictions - batch.targets
-        abs_errors = diff.abs().sum().item()
-        squared_errors = diff.pow(2).sum().item()
+
+        # Compute all scalar values in single operation, then extract
+        metrics_tensor = torch.stack([
+            diff.abs().sum(),
+            diff.pow(2).sum(),
+            loss,
+        ])
+
+        # Single GPU->CPU sync point for all three values
+        metrics_cpu = metrics_tensor.cpu().tolist()
+        abs_errors = metrics_cpu[0]
+        squared_errors = metrics_cpu[1]
+        loss_value = metrics_cpu[2]
+
         num_elements = diff.numel()
 
         return {
-            "loss": loss.item(),
+            "loss": loss_value,
             "mae": abs_errors / num_elements,
             "rmse": (squared_errors / num_elements) ** 0.5,
             # Raw values for aggregation
