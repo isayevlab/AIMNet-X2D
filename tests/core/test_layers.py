@@ -3,7 +3,7 @@
 import torch
 import pytest
 
-from src.core.layers import ShellConvBlock, AttentionPooling, FeedForwardNetwork, scatter_add
+from src.core.layers import ShellConvBlock, AttentionPooling, FeedForwardNetwork, StereochemistryEncoder, scatter_add
 
 
 def test_scatter_add_correctness():
@@ -260,3 +260,32 @@ class TestAttentionPoolingPerformance:
         # Should still work without num_molecules (backward compatible)
         output = pooling(x, batch_idx)
         assert output.shape == (3, 64)
+
+
+class TestStereochemistryEncoder:
+    """Tests for StereochemistryEncoder optimization."""
+
+    def test_stereo_encoder_no_clone_when_empty(self):
+        """Test that StereochemistryEncoder doesn't clone when no stereo info."""
+        encoder = StereochemistryEncoder(hidden_dim=64)
+        x = torch.randn(10, 64)
+
+        # No stereochemistry - should not clone
+        output = encoder(x, None, None, None)
+
+        # Output should be same object when no stereo info
+        assert output is x
+
+    def test_stereo_encoder_clones_when_needed(self):
+        """Test that StereochemistryEncoder clones when stereo info present."""
+        encoder = StereochemistryEncoder(hidden_dim=64)
+        x = torch.randn(10, 64)
+
+        # Has chiral centers - should clone
+        chiral_indices = torch.tensor([[0, 1, 2, 3]])
+        output = encoder(x, chiral_indices, None, None)
+
+        # Output should be different object
+        assert output is not x
+        # But values at non-chiral atoms should be same
+        assert torch.allclose(output[4:], x[4:])

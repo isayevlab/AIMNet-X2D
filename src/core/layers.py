@@ -430,10 +430,19 @@ class StereochemistryEncoder(nn.Module):
         Returns:
             Updated atom features with stereochemistry encoded
         """
+        # Early return if no stereochemistry info
+        has_chiral = chiral_indices is not None and chiral_indices.shape[0] > 0
+        has_cis = cis_bond_indices is not None and cis_bond_indices.shape[0] > 0
+        has_trans = trans_bond_indices is not None and trans_bond_indices.shape[0] > 0
+
+        if not (has_chiral or has_cis or has_trans):
+            return x
+
+        # Only clone if we need to modify
         output = x.clone()
 
         # Add chiral center embeddings
-        if chiral_indices is not None and chiral_indices.shape[0] > 0:
+        if has_chiral:
             center_atoms = chiral_indices[:, 0]
             output[center_atoms] = output[center_atoms] + self.chiral_center_embed
 
@@ -443,14 +452,14 @@ class StereochemistryEncoder(nn.Module):
                 output[valid_neighbors] = output[valid_neighbors] + self.chiral_neighbor_embed
 
         # Add cis bond embeddings
-        if cis_bond_indices is not None and cis_bond_indices.shape[0] > 0:
+        if has_cis:
             cis_atoms = cis_bond_indices[:, :2].flatten()
             valid_cis = cis_atoms[cis_atoms < x.shape[0]]
             if valid_cis.numel() > 0:
                 output[valid_cis] = output[valid_cis] + self.cis_bond_embed
 
         # Add trans bond embeddings
-        if trans_bond_indices is not None and trans_bond_indices.shape[0] > 0:
+        if has_trans:
             trans_atoms = trans_bond_indices[:, :2].flatten()
             valid_trans = trans_atoms[trans_atoms < x.shape[0]]
             if valid_trans.numel() > 0:
