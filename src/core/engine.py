@@ -340,3 +340,137 @@ class Engine:
             Current learning rate from optimizer
         """
         return self.optimizer.param_groups[0]["lr"]
+
+    def train_epoch(
+        self,
+        train_batches: list[MolecularGraphBatch],
+    ) -> dict[str, float]:
+        """
+        Train for one epoch.
+
+        Args:
+            train_batches: List of training batches
+
+        Returns:
+            Dict with epoch metrics ('loss', 'lr')
+        """
+        self.model.train()
+        total_loss = 0.0
+        num_batches = len(train_batches)
+
+        for batch_idx, batch in enumerate(train_batches):
+            loss = self.train_step(batch)
+            total_loss += loss
+
+            if (batch_idx + 1) % self.config.log_interval == 0:
+                logger.info(
+                    f"Epoch {self.epoch} [{batch_idx+1}/{num_batches}] "
+                    f"Loss: {loss:.4f}"
+                )
+
+        self.epoch += 1
+        avg_loss = total_loss / num_batches
+
+        return {
+            "loss": avg_loss,
+            "lr": self.get_lr(),
+        }
+
+    def fit(
+        self,
+        train_batches: list[MolecularGraphBatch],
+        val_batches: list[MolecularGraphBatch] | None = None,
+        verbose: bool = True,
+    ) -> dict[str, list[float]]:
+        """
+        Train model for multiple epochs.
+
+        Args:
+            train_batches: Training data batches
+            val_batches: Optional validation batches
+            verbose: Whether to log progress
+
+        Returns:
+            Training history dict with 'train_loss', 'val_loss', 'lr' lists
+        """
+        history: dict[str, list[float]] = {
+            "train_loss": [],
+            "val_loss": [],
+            "lr": [],
+        }
+
+        epochs_without_improvement = 0
+
+        for epoch in range(self.config.epochs):
+            # Train
+            train_metrics = self.train_epoch(train_batches)
+            history["train_loss"].append(train_metrics["loss"])
+            history["lr"].append(train_metrics["lr"])
+
+            # Validate
+            if val_batches:
+                val_metrics = self.evaluate_batches(val_batches)
+                history["val_loss"].append(val_metrics["loss"])
+
+                # Early stopping check
+                if val_metrics["loss"] < self.best_val_loss:
+                    self.best_val_loss = val_metrics["loss"]
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
+
+                # Step scheduler
+                self.step_scheduler(val_metrics["loss"])
+
+                if verbose:
+                    logger.info(
+                        f"Epoch {self.epoch}: "
+                        f"Train Loss={train_metrics['loss']:.4f}, "
+                        f"Val Loss={val_metrics['loss']:.4f}, "
+                        f"LR={train_metrics['lr']:.2e}"
+                    )
+
+                # Early stopping
+                if epochs_without_improvement >= self.config.early_stopping_patience:
+                    logger.info(f"Early stopping at epoch {self.epoch}")
+                    break
+            else:
+                self.step_scheduler()
+                if verbose:
+                    logger.info(
+                        f"Epoch {self.epoch}: "
+                        f"Train Loss={train_metrics['loss']:.4f}, "
+                        f"LR={train_metrics['lr']:.2e}"
+                    )
+
+        return history
+
+    def evaluate_batches(
+        self,
+        batches: list[MolecularGraphBatch],
+    ) -> dict[str, float]:
+        """
+        Evaluate model on multiple batches.
+
+        Args:
+            batches: List of batches to evaluate
+
+        Returns:
+            Aggregated metrics ('loss', 'mae', 'rmse')
+        """
+        total_loss = 0.0
+        total_mae = 0.0
+        total_rmse = 0.0
+        num_batches = len(batches)
+
+        for batch in batches:
+            metrics = self.evaluate(batch)
+            total_loss += metrics["loss"]
+            total_mae += metrics["mae"]
+            total_rmse += metrics["rmse"]
+
+        return {
+            "loss": total_loss / num_batches,
+            "mae": total_mae / num_batches,
+            "rmse": total_rmse / num_batches,
+        }

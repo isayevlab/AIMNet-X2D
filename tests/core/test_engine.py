@@ -242,3 +242,119 @@ class TestEngineTrainingState:
         assert engine2.epoch == 10
         assert engine2.global_step == 500
         assert engine2.best_val_loss == 0.5
+
+
+class TestEngineFullTraining:
+    """Tests for full training loops."""
+
+    def test_train_epoch(self):
+        """Test training for one epoch."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False)
+        engine = Engine.from_config(model_config, engine_config)
+
+        # Create multiple batches
+        batches = []
+        for _ in range(3):
+            batch = MolecularGraphBatch(
+                atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+                degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+                hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+                hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+                batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+                ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+                edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+                num_molecules=2,
+                targets=torch.randn(2, 1),
+            )
+            batches.append(batch)
+
+        metrics = engine.train_epoch(batches)
+
+        assert "loss" in metrics
+        assert "lr" in metrics
+        assert engine.epoch == 1
+
+    def test_fit_with_validation(self):
+        """Test fit method with train and val data."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(
+            device="cpu",
+            use_amp=False,
+            epochs=2,
+            early_stopping_patience=5,
+        )
+        engine = Engine.from_config(model_config, engine_config)
+
+        # Create train/val batches
+        train_batches = [
+            MolecularGraphBatch(
+                atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+                batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+                ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+                edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+                num_molecules=2,
+                targets=torch.randn(2, 1),
+            )
+            for _ in range(2)
+        ]
+        val_batches = [train_batches[0]]
+
+        history = engine.fit(train_batches, val_batches)
+
+        assert len(history["train_loss"]) == 2
+        assert len(history["val_loss"]) == 2
+
+    def test_evaluate_batches(self):
+        """Test evaluating multiple batches."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu")
+        engine = Engine.from_config(model_config, engine_config)
+
+        batches = [
+            MolecularGraphBatch(
+                atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+                batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+                ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+                edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+                num_molecules=2,
+                targets=torch.randn(2, 1),
+            )
+            for _ in range(3)
+        ]
+
+        metrics = engine.evaluate_batches(batches)
+
+        assert "loss" in metrics
+        assert "mae" in metrics
+        assert "rmse" in metrics
+
+    def test_early_stopping(self):
+        """Test that early stopping works."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(
+            device="cpu",
+            use_amp=False,
+            epochs=100,  # High epoch count
+            early_stopping_patience=2,  # Short patience
+        )
+        engine = Engine.from_config(model_config, engine_config)
+
+        # Create train/val batches
+        train_batches = [
+            MolecularGraphBatch(
+                atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+                batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+                ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+                edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+                num_molecules=2,
+                targets=torch.randn(2, 1),
+            )
+            for _ in range(2)
+        ]
+        val_batches = [train_batches[0]]
+
+        history = engine.fit(train_batches, val_batches)
+
+        # Should stop before 100 epochs (patience 2 means stop after 3 epochs without improvement)
+        assert len(history["train_loss"]) < 100
