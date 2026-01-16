@@ -700,3 +700,70 @@ class TestEngineGradientAccumulation:
 
         # Global step should only increment once (at the final accumulation step)
         assert engine.global_step == initial_global_step + 1
+
+
+class TestEngineAMPConsistency:
+    """Tests for AMP consistency across methods."""
+
+    def test_evaluate_uses_amp_when_enabled(self):
+        """Test that evaluate uses AMP autocast like predict."""
+        import unittest.mock as mock
+
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=True, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        # Mock scaler to simulate AMP being enabled
+        engine.scaler = mock.MagicMock()
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 1),
+        )
+
+        # Should not raise and should return valid metrics
+        metrics = engine.evaluate(batch)
+        assert "loss" in metrics
+        assert "mae" in metrics
+        assert "rmse" in metrics
+
+    def test_evaluate_calls_autocast_when_scaler_present(self):
+        """Test that evaluate() calls torch.amp.autocast when scaler is present."""
+        import unittest.mock as mock
+
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=True, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        # Mock scaler to simulate AMP being enabled
+        engine.scaler = mock.MagicMock()
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 1),
+        )
+
+        # Patch torch.amp.autocast to track if it's called
+        with mock.patch("torch.amp.autocast") as mock_autocast:
+            # Set up the mock to work as a context manager
+            mock_autocast.return_value.__enter__ = mock.MagicMock()
+            mock_autocast.return_value.__exit__ = mock.MagicMock(return_value=False)
+
+            engine.evaluate(batch)
+
+            # Verify autocast was called with "cuda"
+            mock_autocast.assert_called_once_with("cuda")

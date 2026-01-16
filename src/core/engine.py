@@ -346,8 +346,14 @@ class Engine:
         self.model.eval()
         batch = batch.to(self.device)
 
-        predictions = self.model(batch)
-        loss = self.loss_fn(predictions, batch.targets)
+        # Use AMP autocast for consistency with predict() and train_step()
+        if self.scaler is not None:
+            with torch.amp.autocast("cuda"):
+                predictions = self.model(batch)
+                loss = self.loss_fn(predictions, batch.targets)
+        else:
+            predictions = self.model(batch)
+            loss = self.loss_fn(predictions, batch.targets)
 
         # Compute metrics
         diff = predictions - batch.targets
