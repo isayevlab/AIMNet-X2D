@@ -121,3 +121,37 @@ class TestMolecularGraphBatchFeatures:
         assert "degree" in features
         assert "hybridization" in features
         assert "hydrogen_count" in features
+
+
+class TestMolecularGraphBatchDeviceOptimization:
+    """Test device transfer optimizations."""
+
+    def test_to_same_device_returns_self(self):
+        """Test that .to() returns same object if already on target device."""
+        batch = MolecularGraphBatch(
+            atom_types=torch.tensor([6, 6, 8], dtype=torch.int32),
+            batch_idx=torch.tensor([0, 0, 0], dtype=torch.int64),
+            ptr=torch.tensor([0, 3], dtype=torch.int64),
+            num_molecules=1,
+        )
+
+        # Should return same object (identity check)
+        batch2 = batch.to("cpu")
+        assert batch2 is batch
+
+    def test_to_uses_non_blocking_for_pinned(self):
+        """Test that .to() uses non_blocking for pinned tensors."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.tensor([6, 6, 8], dtype=torch.int32),
+            batch_idx=torch.tensor([0, 0, 0], dtype=torch.int64),
+            ptr=torch.tensor([0, 3], dtype=torch.int64),
+            num_molecules=1,
+        )
+        pinned = batch.pin_memory()
+
+        # Should not raise
+        gpu_batch = pinned.to("cuda")
+        assert gpu_batch.device.type == "cuda"

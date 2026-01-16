@@ -73,23 +73,31 @@ class MolecularGraphBatch:
             device: Target device (e.g., 'cuda', 'cpu', torch.device)
 
         Returns:
-            New MolecularGraphBatch with tensors on the target device
+            New MolecularGraphBatch with tensors on the target device,
+            or self if already on target device
         """
         if isinstance(device, str):
             device = torch.device(device)
 
+        # Early return if already on target device
+        if self.device == device:
+            return self
+
         def move_tensor(t: torch.Tensor | None) -> torch.Tensor | None:
-            return t.to(device) if t is not None else None
+            if t is None:
+                return None
+            # Use non_blocking if tensor is pinned (for async GPU transfer)
+            return t.to(device, non_blocking=t.is_pinned())
 
         def move_tensor_list(
             tensors: list[torch.Tensor],
         ) -> list[torch.Tensor]:
-            return [t.to(device) for t in tensors]
+            return [t.to(device, non_blocking=t.is_pinned()) for t in tensors]
 
         return MolecularGraphBatch(
-            atom_types=self.atom_types.to(device),
-            batch_idx=self.batch_idx.to(device),
-            ptr=self.ptr.to(device),
+            atom_types=self.atom_types.to(device, non_blocking=self.atom_types.is_pinned()),
+            batch_idx=self.batch_idx.to(device, non_blocking=self.batch_idx.is_pinned()),
+            ptr=self.ptr.to(device, non_blocking=self.ptr.is_pinned()),
             num_molecules=self.num_molecules,
             degrees=move_tensor(self.degrees),
             hybridizations=move_tensor(self.hybridizations),
