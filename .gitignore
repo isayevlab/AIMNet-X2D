@@ -108,6 +108,9 @@ wandb/
 CLAUDE.md
 */CLAUDE.md
 
+# Development and planning files
+docs/plans/
+
 # Temporary files
 *.tmp
 *.temp
