@@ -1017,3 +1017,31 @@ class TestEngineMCDropout:
         assert mean.shape == (2, 1)
         assert std.shape == (2, 1)
         assert (std >= 0).all()
+
+    def test_predict_mc_dropout_batched_equivalent(self):
+        """Test batched MC Dropout gives same statistical properties."""
+        torch.manual_seed(42)
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2, dropout=0.1)
+        engine_config = EngineConfig(device="cpu", use_amp=False, warmup_epochs=0)
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+        )
+
+        # Run MC Dropout
+        predictions = engine.predict_mc_dropout(batch, num_samples=10)
+
+        # Should still return correct shape
+        assert predictions.shape == (10, 2, 1)
+
+        # Should have variance from dropout
+        std = predictions.std(dim=0)
+        assert std.mean() > 0

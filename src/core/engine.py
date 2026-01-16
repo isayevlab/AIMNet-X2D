@@ -327,7 +327,8 @@ class Engine:
         Run MC Dropout inference for uncertainty estimation.
 
         Performs multiple forward passes with dropout enabled to estimate
-        epistemic uncertainty.
+        epistemic uncertainty. Optimized to batch samples on GPU before
+        transferring to CPU.
 
         Args:
             batch: MolecularGraphBatch (targets optional)
@@ -339,32 +340,44 @@ class Engine:
             If return_stats=True: Tuple of (mean, std), each [num_molecules, output_dim]
         """
         batch = batch.to(self.device)
+        output_dim = self.model.config.output_dim
 
         # Keep model in train mode to enable dropout
         self.model.train()
 
-        samples = []
-        with torch.no_grad():  # No gradients needed for inference
-            for _ in range(num_samples):
+        try:
+            # Pre-allocate tensor on GPU for all samples
+            samples = torch.empty(
+                num_samples,
+                batch.num_molecules,
+                output_dim,
+                device=self.device,
+                dtype=torch.float32
+            )
+
+            with torch.no_grad():  # No gradients needed for inference
+                # Apply AMP context once, outside loop
                 if self.scaler is not None:
                     with torch.amp.autocast("cuda"):
-                        pred = self.model(batch)
+                        for i in range(num_samples):
+                            samples[i] = self.model(batch)
                 else:
-                    pred = self.model(batch)
-                samples.append(pred.cpu())
+                    for i in range(num_samples):
+                        samples[i] = self.model(batch)
 
-        # Restore eval mode
-        self.model.eval()
+            # Single GPU->CPU transfer for all samples
+            samples = samples.cpu()
 
-        # Stack samples: [num_samples, num_molecules, output_dim]
-        all_samples = torch.stack(samples, dim=0)
+        finally:
+            # Always restore eval mode, even if exception occurs
+            self.model.eval()
 
         if return_stats:
-            mean = all_samples.mean(dim=0)
-            std = all_samples.std(dim=0)
+            mean = samples.mean(dim=0)
+            std = samples.std(dim=0)
             return mean, std
 
-        return all_samples
+        return samples
 
     @torch.inference_mode()
     def evaluate(self, batch: MolecularGraphBatch) -> dict[str, float]:
