@@ -29,7 +29,7 @@ class PreprocessingConfig:
 
 class SAENormalizer:
     """
-    Size-Extensive Additive (SAE) normalization with strict train/test isolation.
+    Self-Atomic Energy (SAE) normalization with strict train/test isolation.
     Computes atomic contributions from training data only, applies to all splits.
     """
     

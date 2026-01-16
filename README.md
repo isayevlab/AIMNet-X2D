@@ -21,7 +21,7 @@ AIMNet-X2D is a Graph Neural Network-based model for molecular property predicti
 
 **Core Capabilities**
 - Multi-task learning for simultaneous prediction of multiple molecular properties
-- Size-extensive additive (SAE) normalization for energy properties
+- Self-Atomic Energy (SAE) normalization for energy properties
 - Multi-hop message passing with BFS-based graph traversal
 - Attention-based graph pooling with learnable aggregation
 
@@ -156,7 +156,7 @@ aimnet-x2d/
 
 ### SAE Normalization
 
-Size-Extensive Additive (SAE) normalization accounts for properties that scale with molecular size:
+Self-Atomic Energy (SAE) normalization accounts for properties that scale with molecular size:
 
 - **Use SAE for**: Energies, enthalpies, heat capacities (extrinsic properties)
 - **Don't use SAE for**: logP, HOMO-LUMO gap, dipole moment (intrinsic properties)

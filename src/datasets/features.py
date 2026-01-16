@@ -45,13 +45,13 @@ def compute_sae_dict_from_atomic_numbers_list(
     percentile_cutoff: float = 2.0
 ) -> dict[int, float]:
     """
-    Compute Size-Extensive Additive (SAE) contribution for each atom type.
-    
+    Compute Self-Atomic Energy (SAE) contribution for each atom type.
+
     Args:
         atomic_numbers_list: List of arrays containing atomic numbers for each molecule
         target_values: Target property values for each molecule
         percentile_cutoff: Percentile cutoff for filtering outliers
-        
+
     Returns:
         Dictionary mapping atomic numbers to their SAE contributions
     """

@@ -186,7 +186,7 @@ def _add_training_arguments(parser: argparse.ArgumentParser) -> None:
 
     # SAE
     training_group.add_argument("--calculate_sae", action="store_true",
-                               help="Calculate Size-Extensive Additive normalization")
+                               help="Calculate Self-Atomic Energy (SAE) normalization")
     training_group.add_argument("--sae_subtasks", type=str, default=None,
                                help="Comma-separated subtask indices for SAE")
 
