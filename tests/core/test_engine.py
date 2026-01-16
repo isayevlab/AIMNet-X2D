@@ -509,6 +509,9 @@ class TestEngineLossFunctions:
 
         batch = MolecularGraphBatch(
             atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
             batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
             ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
             edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
@@ -528,6 +531,9 @@ class TestEngineLossFunctions:
 
         batch = MolecularGraphBatch(
             atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            degrees=torch.randint(0, 5, (10,), dtype=torch.int32),
+            hybridizations=torch.randint(0, 6, (10,), dtype=torch.int32),
+            hydrogen_counts=torch.randint(0, 5, (10,), dtype=torch.int32),
             batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
             ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
             edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],

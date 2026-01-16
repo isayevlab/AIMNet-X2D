@@ -30,6 +30,7 @@ class EngineConfig:
         log_interval: Steps between logging.
         use_amp: Use automatic mixed precision.
         compile_model: Use torch.compile().
+        loss_function: Loss function type ('mse', 'mae', or 'huber').
     """
 
     # Optimizer
