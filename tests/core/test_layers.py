@@ -262,6 +262,26 @@ class TestAttentionPoolingPerformance:
         assert output.shape == (3, 64)
 
 
+class TestShellConvBlockEfficiency:
+    """Tests for ShellConvBlock efficiency."""
+
+    def test_shell_conv_empty_edges(self):
+        """Test ShellConvBlock handles empty edges without redundant ops."""
+        block = ShellConvBlock(input_dim=64, hidden_dim=64, num_shells=2)
+        x = torch.randn(10, 64)
+
+        # Empty edges for both shells
+        edge_indices = [
+            torch.zeros(2, 0, dtype=torch.long),
+            torch.zeros(2, 0, dtype=torch.long),
+        ]
+
+        # Should work without errors
+        output = block(x, edge_indices)
+        assert output.shape == (10, 64)
+        assert not torch.isnan(output).any()
+
+
 class TestStereochemistryEncoder:
     """Tests for StereochemistryEncoder optimization."""
 

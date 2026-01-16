@@ -181,34 +181,25 @@ class ShellConvBlock(nn.Module):
         Returns:
             Aggregated features [num_atoms, hidden_dim]
         """
-        # Handle empty edges
-        num_edges = edge_index.shape[1]
+        # Early return for empty edges - skip transform computation
+        if edge_index.shape[1] == 0:
+            return torch.zeros(
+                num_atoms, self.hidden_dim,
+                device=x.device, dtype=x.dtype
+            )
 
-        # Transform source features
+        # Transform and aggregate
         transformed = transform(x)
+        source_idx = edge_index[0]
+        target_idx = edge_index[1]
+        source_features = transformed[source_idx]
 
-        # If no edges, return zeros
-        zeros = torch.zeros(num_atoms, self.hidden_dim, device=x.device, dtype=x.dtype)
-
-        # Handle empty edge case - always compute both paths
-        source_idx = edge_index[0] if num_edges > 0 else torch.zeros(0, dtype=torch.long, device=x.device)
-        target_idx = edge_index[1] if num_edges > 0 else torch.zeros(0, dtype=torch.long, device=x.device)
-
-        # Gather source features
-        source_features = transformed[source_idx] if num_edges > 0 else torch.zeros(0, self.hidden_dim, device=x.device, dtype=x.dtype)
-
-        # Aggregate to target nodes
-        aggregated = scatter_add(
+        return scatter_add(
             source_features,
             target_idx,
             dim=0,
             dim_size=num_atoms,
         )
-
-        # Blend result (always execute both paths, no early return)
-        result = aggregated + zeros * 0  # zeros term ensures both paths execute
-
-        return result
 
 
 class AttentionPooling(nn.Module):
