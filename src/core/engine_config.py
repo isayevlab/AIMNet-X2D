@@ -46,6 +46,9 @@ class EngineConfig:
     # Scheduler
     scheduler: Literal["cosine", "plateau", "none"] = "cosine"
 
+    # Loss
+    loss_function: Literal["mse", "mae", "huber"] = "mse"
+
     # Hardware
     device: str = "auto"
     num_workers: int = 4
@@ -83,6 +86,7 @@ class EngineConfig:
             "warmup_epochs": self.warmup_epochs,
             "early_stopping_patience": self.early_stopping_patience,
             "scheduler": self.scheduler,
+            "loss_function": self.loss_function,
             "device": self.device,
             "num_workers": self.num_workers,
             "use_amp": self.use_amp,

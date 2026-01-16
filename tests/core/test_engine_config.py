@@ -52,3 +52,17 @@ class TestEngineConfig:
         # Should resolve to either cuda or cpu
         device = config.resolved_device
         assert device.type in ("cuda", "cpu")
+
+    def test_loss_function_config(self):
+        """Test that loss_function can be configured."""
+        config = EngineConfig(loss_function="mae")
+        assert config.loss_function == "mae"
+
+        config2 = EngineConfig(loss_function="mse")
+        assert config2.loss_function == "mse"
+
+    def test_loss_function_in_to_dict(self):
+        """Test that loss_function is serialized."""
+        config = EngineConfig(loss_function="huber")
+        d = config.to_dict()
+        assert d["loss_function"] == "huber"

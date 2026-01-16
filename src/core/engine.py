@@ -76,7 +76,7 @@ class Engine:
             self.scaler = torch.amp.GradScaler("cuda")
 
         # Loss function
-        self.loss_fn = nn.MSELoss()
+        self.loss_fn = self._create_loss_function()
 
         # Featurizer for SMILES input (lazy)
         self._featurizer: BatchFeaturizer | None = None
@@ -133,6 +133,19 @@ class Engine:
                 patience=10,
             )
         return None
+
+    def _create_loss_function(self) -> nn.Module:
+        """Create loss function based on config."""
+        loss_type = self.config.loss_function
+
+        if loss_type == "mse":
+            return nn.MSELoss()
+        elif loss_type == "mae":
+            return nn.L1Loss()
+        elif loss_type == "huber":
+            return nn.HuberLoss()
+        else:
+            raise ValueError(f"Unknown loss function: {loss_type}")
 
     def train_step(self, batch: MolecularGraphBatch) -> float:
         """

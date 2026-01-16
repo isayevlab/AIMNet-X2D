@@ -496,3 +496,44 @@ class TestEngineValidation:
         assert metrics["loss"] == 0.0
         assert metrics["mae"] == 0.0
         assert metrics["rmse"] == 0.0
+
+
+class TestEngineLossFunctions:
+    """Tests for Engine loss function configuration."""
+
+    def test_engine_with_mae_loss(self):
+        """Test Engine with MAE loss function."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, loss_function="mae")
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 1),
+        )
+
+        loss = engine.train_step(batch)
+        assert isinstance(loss, float)
+        assert loss >= 0  # MAE is always non-negative
+
+    def test_engine_with_huber_loss(self):
+        """Test Engine with Huber loss function."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(device="cpu", use_amp=False, loss_function="huber")
+        engine = Engine.from_config(model_config, engine_config)
+
+        batch = MolecularGraphBatch(
+            atom_types=torch.randint(0, 10, (10,), dtype=torch.int32),
+            batch_idx=torch.tensor([0]*5 + [1]*5, dtype=torch.int64),
+            ptr=torch.tensor([0, 5, 10], dtype=torch.int64),
+            edge_indices=[torch.randint(0, 10, (2, 15), dtype=torch.int64)],
+            num_molecules=2,
+            targets=torch.randn(2, 1),
+        )
+
+        loss = engine.train_step(batch)
+        assert isinstance(loss, float)
