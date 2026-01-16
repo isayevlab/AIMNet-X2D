@@ -7,7 +7,9 @@ code to register custom losses without modifying the Engine class.
 from __future__ import annotations
 from typing import Any
 
+import torch
 import torch.nn as nn
+from torch import Tensor
 
 
 # Registry of loss function classes
@@ -71,3 +73,58 @@ class MAELoss(nn.L1Loss):
 class HuberLoss(nn.HuberLoss):
     """Huber loss (smooth L1)."""
     pass
+
+
+@register_loss("evidential")
+class EvidentialLoss(nn.Module):
+    """Evidential regression loss for uncertainty quantification.
+
+    Expects predictions of shape [batch, 4] containing:
+    - mu: Mean prediction
+    - v: Variance of mean (epistemic uncertainty)
+    - alpha: Shape parameter (alpha > 1)
+    - beta: Scale parameter (beta > 0)
+
+    Based on "Deep Evidential Regression" (Amini et al., 2020).
+    """
+
+    def __init__(self, coeff: float = 0.01):
+        """Initialize evidential loss.
+
+        Args:
+            coeff: Regularization coefficient for evidence
+        """
+        super().__init__()
+        self.coeff = coeff
+
+    def forward(self, pred: Tensor, target: Tensor) -> Tensor:
+        """Compute evidential loss.
+
+        Args:
+            pred: Predictions [batch, 4] - (mu, v, alpha, beta)
+            target: Targets [batch, 1]
+
+        Returns:
+            Scalar loss
+        """
+        # Unpack predictions
+        mu = pred[:, 0:1]
+        v = torch.nn.functional.softplus(pred[:, 1:2]) + 1e-6
+        alpha = torch.nn.functional.softplus(pred[:, 2:3]) + 1.0
+        beta = torch.nn.functional.softplus(pred[:, 3:4]) + 1e-6
+
+        # NLL loss
+        twoBlambda = 2 * beta * (1 + v)
+        nll = (
+            0.5 * torch.log(torch.pi / v)
+            - alpha * torch.log(twoBlambda)
+            + (alpha + 0.5) * torch.log(v * (target - mu) ** 2 + twoBlambda)
+            + torch.lgamma(alpha)
+            - torch.lgamma(alpha + 0.5)
+        )
+
+        # Regularization on evidence
+        reg = (2 * v + alpha) * torch.abs(target - mu)
+
+        loss = nll + self.coeff * reg
+        return loss.mean()

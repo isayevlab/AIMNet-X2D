@@ -100,3 +100,42 @@ class TestLossRegistry:
 
         # Cleanup
         del LOSS_REGISTRY["test_return"]
+
+    def test_create_evidential_loss(self):
+        """Test creating evidential loss."""
+        loss_fn = create_loss("evidential")
+
+        # Test forward pass
+        pred = torch.randn(10, 4)  # mu, v, alpha, beta
+        target = torch.randn(10, 1)
+
+        loss = loss_fn(pred, target)
+        assert loss.shape == ()
+        assert not torch.isnan(loss)
+
+    def test_evidential_loss_with_custom_coeff(self):
+        """Test evidential loss with custom regularization coefficient."""
+        loss_fn = create_loss("evidential", coeff=0.1)
+        assert loss_fn.coeff == 0.1
+
+        pred = torch.randn(10, 4)
+        target = torch.randn(10, 1)
+
+        loss = loss_fn(pred, target)
+        assert loss.shape == ()
+        assert not torch.isnan(loss)
+
+    def test_evidential_loss_positive_output(self):
+        """Test that evidential loss produces positive values for typical inputs."""
+        loss_fn = create_loss("evidential")
+
+        # Use reasonable prediction values
+        pred = torch.tensor([
+            [0.5, 1.0, 1.5, 0.5],
+            [1.0, 0.5, 2.0, 1.0],
+            [0.0, 0.8, 1.2, 0.3],
+        ])
+        target = torch.tensor([[0.6], [0.9], [0.1]])
+
+        loss = loss_fn(pred, target)
+        assert loss > 0  # Loss should be positive
