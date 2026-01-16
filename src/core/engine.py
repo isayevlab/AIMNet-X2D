@@ -118,21 +118,45 @@ class Engine:
         return self._featurizer
 
     def _create_scheduler(self):
-        """Create learning rate scheduler based on config."""
+        """Create learning rate scheduler based on config with optional warmup."""
+        if self.config.scheduler == "none":
+            return None
+
+        # Create main scheduler
         if self.config.scheduler == "cosine":
-            return CosineAnnealingLR(
+            main_scheduler = CosineAnnealingLR(
                 self.optimizer,
-                T_max=self.config.epochs,
+                T_max=max(1, self.config.epochs - self.config.warmup_epochs),
                 eta_min=self.config.learning_rate * 0.01,
             )
         elif self.config.scheduler == "plateau":
-            return ReduceLROnPlateau(
+            main_scheduler = ReduceLROnPlateau(
                 self.optimizer,
                 mode="min",
                 factor=0.5,
                 patience=10,
             )
-        return None
+        else:
+            return None
+
+        # Add warmup if configured
+        if self.config.warmup_epochs > 0 and self.config.scheduler != "plateau":
+            from torch.optim.lr_scheduler import LinearLR, SequentialLR
+
+            warmup_scheduler = LinearLR(
+                self.optimizer,
+                start_factor=0.1,
+                end_factor=1.0,
+                total_iters=self.config.warmup_epochs,
+            )
+
+            return SequentialLR(
+                self.optimizer,
+                schedulers=[warmup_scheduler, main_scheduler],
+                milestones=[self.config.warmup_epochs],
+            )
+
+        return main_scheduler
 
     def _create_loss_function(self) -> nn.Module:
         """Create loss function based on config."""

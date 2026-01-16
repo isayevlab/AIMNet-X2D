@@ -282,6 +282,7 @@ class TestEngineFullTraining:
             device="cpu",
             use_amp=False,
             epochs=2,
+            warmup_epochs=0,
             early_stopping_patience=5,
         )
         engine = Engine.from_config(model_config, engine_config)
@@ -496,6 +497,55 @@ class TestEngineValidation:
         assert metrics["loss"] == 0.0
         assert metrics["mae"] == 0.0
         assert metrics["rmse"] == 0.0
+
+
+class TestEngineWarmup:
+    """Tests for Engine learning rate warmup."""
+
+    def test_warmup_scheduler(self):
+        """Test that warmup epochs work correctly."""
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(
+            device="cpu",
+            scheduler="cosine",
+            warmup_epochs=3,
+            epochs=10,
+            learning_rate=1e-3,
+        )
+        engine = Engine.from_config(model_config, engine_config)
+
+        # First step should have reduced LR due to warmup
+        initial_lr = engine.get_lr()
+        assert initial_lr < engine_config.learning_rate  # Should start lower
+
+        # Step through warmup
+        for _ in range(3):
+            engine.step_scheduler()
+
+        # After warmup, should be at or near base LR
+        after_warmup_lr = engine.get_lr()
+        assert after_warmup_lr >= initial_lr  # Should have increased
+
+    def test_no_warmup_scheduler(self):
+        """Test that warmup_epochs=0 doesn't add warmup."""
+        from torch.optim.lr_scheduler import CosineAnnealingLR
+
+        model_config = ModelConfig(hidden_dim=32, output_dim=1, num_shells=2)
+        engine_config = EngineConfig(
+            device="cpu",
+            scheduler="cosine",
+            warmup_epochs=0,
+            epochs=10,
+        )
+        engine = Engine.from_config(model_config, engine_config)
+
+        # Should be CosineAnnealingLR, not SequentialLR
+        assert isinstance(engine.scheduler, CosineAnnealingLR)
+
+    def test_warmup_invalid_config(self):
+        """Test that warmup_epochs >= epochs raises error."""
+        with pytest.raises(ValueError, match="warmup_epochs"):
+            EngineConfig(warmup_epochs=10, epochs=5)
 
 
 class TestEngineLossFunctions:

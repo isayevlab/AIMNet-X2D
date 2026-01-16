@@ -24,7 +24,7 @@ class EngineConfig:
         num_workers: DataLoader workers.
         gradient_clip: Max gradient norm (None to disable).
         scheduler: Learning rate scheduler type.
-        warmup_epochs: Epochs for learning rate warmup.
+        warmup_epochs: Epochs for learning rate warmup (starts at 10% of base LR).
         early_stopping_patience: Epochs without improvement before stopping.
         checkpoint_dir: Directory for saving checkpoints.
         log_interval: Steps between logging.
@@ -59,6 +59,14 @@ class EngineConfig:
     # Logging
     checkpoint_dir: str = "checkpoints"
     log_interval: int = 100
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        if self.warmup_epochs > 0 and self.warmup_epochs >= self.epochs:
+            raise ValueError(
+                f"warmup_epochs ({self.warmup_epochs}) must be less than "
+                f"epochs ({self.epochs})"
+            )
 
     @property
     def resolved_device(self) -> torch.device:
