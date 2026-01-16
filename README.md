@@ -258,13 +258,13 @@ Please open an issue or pull request on [GitHub](https://github.com/isayevlab/ai
 
 - **Issues**: [GitHub Issues](https://github.com/isayevlab/aimnet-x2d/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/isayevlab/aimnet-x2d/discussions)
-- **Email**: [Isayev Lab](https://isayev.chem.cmu.edu/)
+- **Email**: [Isayev Lab](https://isayevlab.org/)
 
 ## Authors
 
 Rohit Nandakumar, Roman Zubatyuk, Olexandr Isayev
 
-[Isayev Laboratory](https://isayev.chem.cmu.edu/), Carnegie Mellon University
+[Isayev Laboratory](https://isayevlab.org/), Carnegie Mellon University
 
 ## License
 
