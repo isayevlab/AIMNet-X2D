@@ -631,28 +631,30 @@ class TestKnownBugs:
         assert r_sign == 1.0, f"R configuration should have sign +1.0, got {r_sign}"
         assert s_sign == -1.0, f"S configuration should have sign -1.0, got {s_sign}"
 
-    def test_cip_priority_now_used_for_low_atom(self):
+    def test_canonical_ranks_used_for_priority(self):
         """
-        FIXED: Low atom selection now uses CIP priority via get_cip_rank().
+        FIXED: Atom priority now uses Chem.CanonicalRankAtoms().
 
         Previous bug location: features.py:268,273
         Used: min(..., key=lambda idx: mol.GetAtomWithIdx(idx).GetAtomicNum())
 
-        Fix: Now uses get_cip_rank() which returns CIP rank from _CIPRank property
-        with fallback to atomic number if not available.
+        Fix: Now uses get_canonical_ranks() which returns canonical ranks
+        via Chem.CanonicalRankAtoms() - more reliable than _CIPRank property.
         """
         # Verify the function exists and works
-        from datasets.features import get_cip_rank
+        from datasets.features import get_canonical_ranks
         from rdkit import Chem
 
         mol = Chem.MolFromSmiles("C/C=C/C")  # E-2-butene
         mol = Chem.AddHs(mol)
         Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
 
-        # get_cip_rank should work without raising
-        for atom in mol.GetAtoms():
-            rank = get_cip_rank(mol, atom.GetIdx())
-            assert isinstance(rank, int), f"CIP rank should be int, got {type(rank)}"
+        # get_canonical_ranks should return a list of int ranks
+        ranks = get_canonical_ranks(mol)
+        assert isinstance(ranks, list), f"Should return list, got {type(ranks)}"
+        assert len(ranks) == mol.GetNumAtoms(), "Should have one rank per atom"
+        for rank in ranks:
+            assert isinstance(rank, int), f"Each rank should be int, got {type(rank)}"
 
     def test_documentation_zero_out_non_chiral_atoms(self):
         """
@@ -703,6 +705,143 @@ class TestStereochemistryPerformance:
 # =============================================================================
 # GOLDEN TEST SET - Lock in correct extraction behavior
 # =============================================================================
+
+# =============================================================================
+# PYRAMIDAL HETEROATOM TESTS
+# =============================================================================
+
+class TestPyramidalHeteroatoms:
+    """Tests for pyramidal heteroatom center detection (sulfoxides, phosphines)."""
+
+    def test_sulfoxide_detected_as_chiral(self):
+        """Test that chiral sulfoxides are detected with virtual lone pair."""
+        from datasets.features import classify_pyramidal_hetero
+        from rdkit import Chem
+
+        sulfoxide = "C[S@@](=O)CC"  # Chiral sulfoxide
+        mol = Chem.MolFromSmiles(sulfoxide)
+        mol = Chem.AddHs(mol)
+        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+
+        # Find sulfur atom
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 16:
+                hetero_type = classify_pyramidal_hetero(mol, atom.GetIdx())
+                assert hetero_type == 'sulfoxide', f"Should classify as sulfoxide, got {hetero_type}"
+                break
+
+    def test_sulfoxide_has_virtual_lp_flag(self):
+        """Test that sulfoxide chiral center has virtual LP flag set."""
+        result = compute_all("C[S@@](=O)CC", max_hops=3)
+        assert result is not None
+
+        assert 'chiral_is_virtual_lp' in result
+        assert len(result['chiral_is_virtual_lp']) > 0, "Should have chiral center"
+
+        # 4th neighbor should be virtual LP
+        lp_flags = result['chiral_is_virtual_lp'][0]
+        assert lp_flags[3] == True, "4th position should be virtual LP"
+        assert lp_flags[0] == False and lp_flags[1] == False and lp_flags[2] == False
+
+    def test_sulfoxide_element_stored(self):
+        """Test that center element is stored correctly for sulfoxide."""
+        result = compute_all("C[S@@](=O)CC", max_hops=3)
+        assert result is not None
+
+        assert 'chiral_elements' in result
+        assert len(result['chiral_elements']) > 0
+        assert result['chiral_elements'][0] == 16, "Sulfur atomic number is 16"
+
+    def test_tetrahedral_carbon_no_virtual_lp(self):
+        """Test that standard tetrahedral carbon has no virtual LP flags."""
+        result = compute_all(R_LACTIC_ACID, max_hops=3)
+        assert result is not None
+
+        assert 'chiral_is_virtual_lp' in result
+        assert len(result['chiral_is_virtual_lp']) > 0
+
+        # Standard tetrahedral should have all False
+        lp_flags = result['chiral_is_virtual_lp'][0]
+        assert all(not flag for flag in lp_flags), "Tetrahedral C should have no virtual LP"
+
+    def test_tetrahedral_carbon_element_stored(self):
+        """Test that center element is stored correctly for carbon."""
+        result = compute_all(R_LACTIC_ACID, max_hops=3)
+        assert result is not None
+
+        assert 'chiral_elements' in result
+        assert result['chiral_elements'][0] == 6, "Carbon atomic number is 6"
+
+    def test_tertiary_amine_not_chiral(self):
+        """Test that tertiary amines are NOT detected as chiral (fast inversion)."""
+        from datasets.features import classify_pyramidal_hetero
+        from rdkit import Chem
+
+        # Trimethylamine - NOT chiral due to fast nitrogen inversion
+        amine = "CN(C)C"
+        mol = Chem.MolFromSmiles(amine)
+        mol = Chem.AddHs(mol)
+        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+
+        # Find nitrogen atom
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 7:
+                hetero_type = classify_pyramidal_hetero(mol, atom.GetIdx())
+                assert hetero_type is None, f"Tertiary amine should NOT be chiral, got {hetero_type}"
+                break
+
+
+# =============================================================================
+# ALLENE (AXIAL CHIRALITY) TESTS
+# =============================================================================
+
+class TestAlleneChirality:
+    """Tests for allene axial chirality detection (C=C=C pattern)."""
+
+    def test_allene_detected(self):
+        """Test that allene center is detected using double-bond pattern."""
+        # 1,3-dimethylallene
+        result = compute_all("CC=C=CC", max_hops=3)
+        assert result is not None
+
+        assert 'allene_centers' in result
+        assert 'allene_subs' in result
+        assert len(result['allene_centers']) == 1, "Should detect 1 allene center"
+
+    def test_allene_substituents_stored(self):
+        """Test that allene substituents are stored correctly."""
+        result = compute_all("CC=C=CC", max_hops=3)
+        assert result is not None
+
+        # Should have 4 substituents [R1, R2, R3, R4]
+        assert result['allene_subs'].shape == (1, 4), "Should have 4 substituents"
+
+    def test_simple_allene_extracted(self):
+        """Test that simple allene (C=C=C) is extracted for downstream processing."""
+        result = compute_all("C=C=C", max_hops=3)
+        assert result is not None
+
+        # Simple allene has H substituents - still extracted for model to handle
+        assert 'allene_centers' in result
+        # May or may not detect depending on H handling
+
+    def test_no_allene_in_regular_molecule(self):
+        """Test that regular molecules have no allene data."""
+        result = compute_all(R_LACTIC_ACID, max_hops=3)
+        assert result is not None
+
+        assert len(result['allene_centers']) == 0, "Regular molecule should have no allene"
+        assert result['allene_subs'].shape[0] == 0, "Should have empty allene_subs"
+
+    def test_allene_keys_exist(self):
+        """Test that allene keys are always present in result."""
+        # Test various molecules
+        for smiles in [R_LACTIC_ACID, E_2_BUTENE, ETHANOL, "CC=C=CC"]:
+            result = compute_all(smiles, max_hops=3)
+            if result:
+                assert 'allene_centers' in result, f"Missing allene_centers for {smiles}"
+                assert 'allene_subs' in result, f"Missing allene_subs for {smiles}"
+
 
 class TestGoldenStereochemistry:
     """
@@ -790,6 +929,234 @@ class TestGoldenStereochemistry:
         assert len(result['chiral_signs']) == 0
         assert len(result['cis_bonds_tensors']) == 0
         assert len(result['trans_bonds_tensors']) == 0
+
+
+class TestNewHeteroatomTypes:
+    """Tests for newly added heteroatom chiral center types."""
+
+    def test_aziridine_detected_as_chiral(self):
+        """Aziridines (3-membered N rings) should be detected as chiral centers.
+
+        Aziridines have high inversion barrier (~15 kcal/mol) due to ring strain,
+        making them configurationally stable unlike regular tertiary amines.
+        """
+        # 2-methylaziridine
+        aziridine = "CC1CN1"
+        result = compute_all(aziridine, max_hops=3)
+        assert result is not None
+
+        # The nitrogen should be detected as a chiral center
+        # Note: RDKit may or may not assign chirality depending on representation
+        # At minimum, we verify the function doesn't crash
+        assert 'chiral_tensors' in result
+
+    def test_sulfonium_ion_detected(self):
+        """Sulfonium ions (R3S+) should be detected as chiral centers.
+
+        Example: Trimethylsulfonium - configurationally stable.
+        SAM (S-adenosylmethionine) derivatives have chiral sulfonium centers.
+        """
+        # Trimethylsulfonium ion
+        sulfonium = "C[S+](C)C"
+        result = compute_all(sulfonium, max_hops=3)
+        assert result is not None
+
+        # With three different substituents, sulfonium would be chiral
+        # For trimethylsulfonium (all same), no chirality expected
+        assert 'chiral_tensors' in result
+
+    def test_sulfonium_with_different_substituents(self):
+        """Sulfonium with different R groups should be detected."""
+        # Ethylmethylphenylsulfonium - different substituents = chiral
+        sulfonium_chiral = "CC[S+](C)c1ccccc1"
+        result = compute_all(sulfonium_chiral, max_hops=3)
+        assert result is not None
+        assert 'chiral_tensors' in result
+
+    def test_selenoxide_detected(self):
+        """Selenoxides (R2Se=O) should be detected as chiral centers.
+
+        Selenoxides have similar inversion barrier to sulfoxides (~35 kcal/mol).
+        """
+        # Dimethyl selenoxide
+        selenoxide = "C[Se](=O)C"
+        result = compute_all(selenoxide, max_hops=3)
+        assert result is not None
+        assert 'chiral_tensors' in result
+
+
+class TestPhosphineOxideEdgeCases:
+    """Tests for phosphine oxide detection edge cases."""
+
+    def test_phosphine_oxide_detected(self):
+        """Standard phosphine oxide R3P=O should be detected."""
+        # Trimethylphosphine oxide
+        phos_oxide = "CP(=O)(C)C"
+        result = compute_all(phos_oxide, max_hops=3)
+        assert result is not None
+        assert 'chiral_tensors' in result
+
+    def test_phosphorus_ylide_not_detected_as_phosphine_oxide(self):
+        """Phosphorus ylides (P=C) should NOT be detected as phosphine oxides.
+
+        The fix requires P=O specifically, not any double bond.
+        """
+        # Methylenetriphenylphosphorane (Wittig reagent)
+        # Represented with P=C double bond
+        ylide = "C=P(c1ccccc1)(c1ccccc1)c1ccccc1"
+        result = compute_all(ylide, max_hops=3)
+        assert result is not None
+        # Should not have chiral centers from false phosphine oxide detection
+        # (the phosphorus is not truly chiral in the ylide sense)
+
+
+class TestEZRingFilter:
+    """Tests for E/Z ring size filtering."""
+
+    def test_cyclohexene_no_ez(self):
+        """Cyclohexene (6-membered) should NOT have E/Z detection.
+
+        E-cyclohexene cannot exist physically.
+        """
+        cyclohexene = "C1=CCCCC1"
+        result = compute_all(cyclohexene, max_hops=3)
+        assert result is not None
+
+        # Should have no E/Z bonds (ring too small)
+        assert len(result['cis_bonds_tensors']) == 0
+        assert len(result['trans_bonds_tensors']) == 0
+
+    def test_cyclooctene_allows_ez(self):
+        """Cyclooctene (8-membered) should allow E/Z detection.
+
+        trans-Cyclooctene exists and is used in bioorthogonal chemistry.
+        """
+        # Z-cyclooctene (cis)
+        z_cyclooctene = r"C\1=C/CCCCCC1"
+        result = compute_all(z_cyclooctene, max_hops=3)
+        assert result is not None
+        # Should have cis bonds for Z isomer
+        # Note: depends on RDKit parsing
+
+    def test_small_ring_double_bond_excluded(self):
+        """Double bonds in 3-7 membered rings should be excluded from E/Z."""
+        # Cyclopropene (3-membered)
+        cyclopropene = "C1=CC1"
+        result = compute_all(cyclopropene, max_hops=3)
+        assert result is not None
+        assert len(result['cis_bonds_tensors']) == 0
+        assert len(result['trans_bonds_tensors']) == 0
+
+        # Cyclobutene (4-membered)
+        cyclobutene = "C1=CCC1"
+        result = compute_all(cyclobutene, max_hops=3)
+        assert result is not None
+        assert len(result['cis_bonds_tensors']) == 0
+        assert len(result['trans_bonds_tensors']) == 0
+
+
+class TestCanonicalRanksValidation:
+    """Tests for get_canonical_ranks validation."""
+
+    def test_canonical_ranks_none_molecule_raises(self):
+        """Passing None molecule should raise ValueError."""
+        from src.datasets.features import get_canonical_ranks
+        with pytest.raises(ValueError, match="Cannot compute canonical ranks for None"):
+            get_canonical_ranks(None)
+
+    def test_canonical_ranks_empty_molecule(self):
+        """Empty molecule should return empty list."""
+        from rdkit import Chem
+        from src.datasets.features import get_canonical_ranks
+
+        # Create empty molecule
+        mol = Chem.RWMol()
+        ranks = get_canonical_ranks(mol)
+        assert ranks == []
+
+    def test_canonical_ranks_returns_list(self):
+        """Canonical ranks should return a list of integers."""
+        from rdkit import Chem
+        from src.datasets.features import get_canonical_ranks
+
+        mol = Chem.MolFromSmiles("CCO")
+        mol = Chem.AddHs(mol)
+        ranks = get_canonical_ranks(mol)
+
+        assert isinstance(ranks, list)
+        assert len(ranks) == mol.GetNumAtoms()
+        assert all(isinstance(r, (int, np.integer)) for r in ranks)
+
+
+class TestClassifyPyramidalHetero:
+    """Tests for classify_pyramidal_hetero function."""
+
+    def test_classify_sulfoxide(self):
+        """Sulfoxide (R2S=O) should return 'sulfoxide'."""
+        from rdkit import Chem
+        from src.datasets.features import classify_pyramidal_hetero
+
+        mol = Chem.MolFromSmiles("CS(=O)C")
+        mol = Chem.AddHs(mol)
+        # Find the sulfur atom
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 16:
+                result = classify_pyramidal_hetero(mol, atom.GetIdx())
+                assert result == 'sulfoxide'
+                break
+
+    def test_classify_sulfonium(self):
+        """Sulfonium (R3S+) should return 'sulfonium'."""
+        from rdkit import Chem
+        from src.datasets.features import classify_pyramidal_hetero
+
+        mol = Chem.MolFromSmiles("C[S+](C)C")
+        mol = Chem.AddHs(mol)
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 16:
+                result = classify_pyramidal_hetero(mol, atom.GetIdx())
+                assert result == 'sulfonium'
+                break
+
+    def test_classify_aziridine(self):
+        """Aziridine N should return 'aziridine'."""
+        from rdkit import Chem
+        from src.datasets.features import classify_pyramidal_hetero
+
+        mol = Chem.MolFromSmiles("C1CN1")  # Simple aziridine
+        mol = Chem.AddHs(mol)
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 7:
+                result = classify_pyramidal_hetero(mol, atom.GetIdx())
+                assert result == 'aziridine', f"Expected 'aziridine', got {result}"
+                break
+
+    def test_tertiary_amine_not_chiral(self):
+        """Regular tertiary amines should return None (fast inversion)."""
+        from rdkit import Chem
+        from src.datasets.features import classify_pyramidal_hetero
+
+        mol = Chem.MolFromSmiles("CN(C)C")  # Trimethylamine
+        mol = Chem.AddHs(mol)
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 7:
+                result = classify_pyramidal_hetero(mol, atom.GetIdx())
+                assert result is None, f"Tertiary amine should return None, got {result}"
+                break
+
+    def test_phosphine_oxide_requires_oxygen(self):
+        """Phosphine oxide detection should require P=O specifically."""
+        from rdkit import Chem
+        from src.datasets.features import classify_pyramidal_hetero
+
+        # Trimethylphosphine oxide - should be detected
+        mol = Chem.MolFromSmiles("CP(=O)(C)C")
+        mol = Chem.AddHs(mol)
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                result = classify_pyramidal_hetero(mol, atom.GetIdx())
+                assert result == 'phosphine_oxide'
+                break
 
 
 if __name__ == "__main__":

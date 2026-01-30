@@ -91,8 +91,14 @@ class PyGSMILESDataset(InMemoryDataset):
             # chiral_tensors now have shape (5,): [center_idx, n1, n2, n3, n4]
             data.chiral_tensors = [torch.from_numpy(x).long() for x in precomp["chiral_tensors"]]
             data.chiral_signs = torch.from_numpy(precomp["chiral_signs"]).float()
+            data.chiral_is_virtual_lp = torch.from_numpy(precomp["chiral_is_virtual_lp"]).bool()
+            data.chiral_elements = torch.from_numpy(precomp["chiral_elements"]).long()
             data.cis_bonds_tensors = [torch.from_numpy(x).long() for x in precomp["cis_bonds_tensors"]]
             data.trans_bonds_tensors = [torch.from_numpy(x).long() for x in precomp["trans_bonds_tensors"]]
+
+            # Allene (axial) chirality
+            data.allene_centers = torch.from_numpy(precomp["allene_centers"]).long()
+            data.allene_subs = torch.from_numpy(precomp["allene_subs"]).long()
 
             data.total_charge = torch.tensor([precomp["total_charge"]], dtype=torch.float)
             data.atomic_numbers = torch.from_numpy(precomp["atomic_numbers"]).long()
@@ -304,7 +310,8 @@ class HDF5MolecularIterableDataset(torch.utils.data.IterableDataset):
 
         data_obj = Data()
         data_obj.x = x_dummy
-        data_obj.smiles = smi
+        # Use processed SMILES (canonical with explicit H) for consistency with in-memory dataset
+        data_obj.smiles = precomp.get("processed_smiles", smi)
 
         if isinstance(tgt, list):
             data_obj.target = torch.tensor(tgt, dtype=torch.float)
@@ -325,12 +332,18 @@ class HDF5MolecularIterableDataset(torch.utils.data.IterableDataset):
             torch.from_numpy(x).long() for x in precomp["chiral_tensors"]
         ]
         data_obj.chiral_signs = torch.from_numpy(precomp["chiral_signs"]).float()
+        data_obj.chiral_is_virtual_lp = torch.from_numpy(precomp["chiral_is_virtual_lp"]).bool()
+        data_obj.chiral_elements = torch.from_numpy(precomp["chiral_elements"]).long()
         data_obj.cis_bonds_tensors = [
             torch.from_numpy(x).long() for x in precomp["cis_bonds_tensors"]
         ]
         data_obj.trans_bonds_tensors = [
             torch.from_numpy(x).long() for x in precomp["trans_bonds_tensors"]
         ]
+
+        # Allene (axial) chirality
+        data_obj.allene_centers = torch.from_numpy(precomp["allene_centers"]).long()
+        data_obj.allene_subs = torch.from_numpy(precomp["allene_subs"]).long()
 
         data_obj.total_charge = torch.tensor([precomp["total_charge"]], dtype=torch.float)
         data_obj.atomic_numbers = torch.from_numpy(precomp["atomic_numbers"]).long()
@@ -368,21 +381,41 @@ class MolecularBatch(Batch):
         # chiral_tensors now have shape (5,): [center_idx, n1, n2, n3, n4]
         shifted_chiral_centers = []
         chiral_signs_list = []
+        chiral_is_virtual_lp_list = []
+        chiral_elements_list = []
         shifted_cis_bonds = []
         shifted_trans_bonds = []
+        shifted_allene_centers = []
+        shifted_allene_subs = []
         for i, d in enumerate(data_list):
             offset = atom_offsets[i]
             # Chirality - now expects shape (5,)
             for ch in d.chiral_tensors:
                 if ch.size(0) == 5:  # [center, n1, n2, n3, n4]
                     shifted_chiral_centers.append(ch + offset)
+                elif ch.size(0) != 0:
+                    logger.warning(f"Unexpected chiral tensor size {ch.size(0)}, expected 5. Skipping.")
             # Collect chiral signs for this molecule
             if hasattr(d, 'chiral_signs') and d.chiral_signs.numel() > 0:
                 chiral_signs_list.extend(d.chiral_signs.tolist())
+            # Collect virtual LP mask - validate shape is (N, 4)
+            if hasattr(d, 'chiral_is_virtual_lp') and d.chiral_is_virtual_lp.numel() > 0:
+                if d.chiral_is_virtual_lp.dim() == 2 and d.chiral_is_virtual_lp.shape[1] == 4:
+                    chiral_is_virtual_lp_list.append(d.chiral_is_virtual_lp)
+                else:
+                    logger.warning(f"Unexpected chiral_is_virtual_lp shape {d.chiral_is_virtual_lp.shape}, expected (N, 4). Skipping.")
+            # Collect chiral center elements
+            if hasattr(d, 'chiral_elements') and d.chiral_elements.numel() > 0:
+                chiral_elements_list.append(d.chiral_elements)
             # Cis
             shifted_cis_bonds.extend(bond + offset for bond in d.cis_bonds_tensors)
             # Trans
             shifted_trans_bonds.extend(bond + offset for bond in d.trans_bonds_tensors)
+            # Allene centers and substituents
+            if hasattr(d, 'allene_centers') and d.allene_centers.numel() > 0:
+                shifted_allene_centers.append(d.allene_centers + offset)
+            if hasattr(d, 'allene_subs') and d.allene_subs.numel() > 0:
+                shifted_allene_subs.append(d.allene_subs + offset)
 
         final_tetrahedral_chiral_tensor = (
             torch.stack(shifted_chiral_centers, dim=0)
@@ -394,6 +427,16 @@ class MolecularBatch(Batch):
             if chiral_signs_list
             else torch.empty((0,), dtype=torch.float)
         )
+        chiral_is_virtual_lp_tensor = (
+            torch.cat(chiral_is_virtual_lp_list, dim=0)
+            if chiral_is_virtual_lp_list
+            else torch.empty((0, 4), dtype=torch.bool)
+        )
+        chiral_elements_tensor = (
+            torch.cat(chiral_elements_list, dim=0)
+            if chiral_elements_list
+            else torch.empty((0,), dtype=torch.long)
+        )
         cis_bonds_tensor = (
             torch.stack(shifted_cis_bonds, dim=0)
             if shifted_cis_bonds
@@ -404,18 +447,21 @@ class MolecularBatch(Batch):
             if shifted_trans_bonds
             else torch.empty((0, 2), dtype=torch.long)
         )
+        allene_centers_tensor = (
+            torch.cat(shifted_allene_centers, dim=0)
+            if shifted_allene_centers
+            else torch.empty((0,), dtype=torch.long)
+        )
+        allene_subs_tensor = (
+            torch.cat(shifted_allene_subs, dim=0)
+            if shifted_allene_subs
+            else torch.empty((0, 4), dtype=torch.long)
+        )
 
-        # Add reversed direction
-        final_cis_tensor = (
-            torch.cat([cis_bonds_tensor, cis_bonds_tensor[:, [1, 0]]], dim=0)
-            if cis_bonds_tensor.numel() > 0
-            else torch.empty((0, 2), dtype=torch.long)
-        )
-        final_trans_tensor = (
-            torch.cat([trans_bonds_tensor, trans_bonds_tensor[:, [1, 0]]], dim=0)
-            if trans_bonds_tensor.numel() > 0
-            else torch.empty((0, 2), dtype=torch.long)
-        )
+        # Note: features.py already adds both directions for cis/trans pairs
+        # so no reversal needed here
+        final_cis_tensor = cis_bonds_tensor if cis_bonds_tensor.numel() > 0 else torch.empty((0, 2), dtype=torch.long)
+        final_trans_tensor = trans_bonds_tensor if trans_bonds_tensor.numel() > 0 else torch.empty((0, 2), dtype=torch.long)
 
         # 4) Concatenate atom features
         feature_keys = list(data_list[0].atom_features_map.keys())
@@ -469,8 +515,12 @@ class MolecularBatch(Batch):
 
         batch.final_tetrahedral_chiral_tensor = final_tetrahedral_chiral_tensor
         batch.chiral_signs = chiral_signs_tensor
+        batch.chiral_is_virtual_lp = chiral_is_virtual_lp_tensor
+        batch.chiral_elements = chiral_elements_tensor
         batch.final_cis_tensor = final_cis_tensor
         batch.final_trans_tensor = final_trans_tensor
+        batch.allene_centers = allene_centers_tensor
+        batch.allene_subs = allene_subs_tensor
         batch.smiles_list = smiles_list
 
         # For PyG usage

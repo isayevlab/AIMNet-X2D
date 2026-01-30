@@ -30,26 +30,180 @@ logger = get_logger(__name__)
 CHIRALITY_SIGNS = {'R': 1.0, 'S': -1.0, 'r': 0.5, 's': -0.5}
 
 
-def get_cip_rank(mol, atom_idx: int) -> int:
+def get_canonical_ranks(mol) -> list[int]:
     """
-    Get CIP rank for atom, with fallback to atomic number.
+    Get canonical (CIP-like) ranks for all atoms in the molecule.
 
-    CIP (Cahn-Ingold-Prelog) ranks are used to determine priority
-    in stereochemistry assignments. Higher priority = lower rank number.
+    Uses Chem.CanonicalRankAtoms() which is more reliable than accessing
+    the _CIPRank property directly. Lower rank = higher priority.
+
+    Note: This is NOT true CIP ranking - it uses RDKit's canonical ordering
+    which may differ from CIP for isotopes, nested chirality, etc.
+    For ML purposes, consistency is more important than strict CIP compliance.
+
+    Args:
+        mol: RDKit molecule object with stereochemistry assigned
+
+    Returns:
+        List of canonical ranks, one per atom (lower = higher priority)
+
+    Raises:
+        ValueError: If mol is None
+    """
+    if mol is None:
+        raise ValueError("Cannot compute canonical ranks for None molecule")
+    if mol.GetNumAtoms() == 0:
+        return []
+    return list(Chem.CanonicalRankAtoms(mol, breakTies=True))
+
+
+def classify_pyramidal_hetero(mol, atom_idx: int) -> str | None:
+    """
+    Classify pyramidal heteroatom centers that can be chiral.
+
+    Pyramidal centers have 3 explicit neighbors + 1 lone pair, which acts
+    as a virtual 4th substituent for chirality determination.
 
     Args:
         mol: RDKit molecule object
-        atom_idx: Index of the atom
+        atom_idx: Index of the atom to classify
 
     Returns:
-        CIP rank (lower = higher priority), or atomic number as fallback
+        'sulfoxide' - R₂S=O (stable ~40 kcal/mol inversion barrier)
+        'sulfonium' - R₃S⁺ (configurationally stable, e.g., SAM derivatives)
+        'selenoxide' - R₂Se=O (stable ~35 kcal/mol inversion barrier)
+        'phosphine_oxide' - R₃P=O (configurationally stable)
+        'phosphine_pyramidal' - R₃P (may have low barrier, include with caution)
+        'quaternary_N' - R₄N⁺ (truly tetrahedral, no lone pair)
+        'aziridine' - N in 3-membered ring (high inversion barrier ~15 kcal/mol)
+        None - not a stable chiral center (e.g., tertiary amines)
     """
     atom = mol.GetAtomWithIdx(atom_idx)
-    try:
-        return atom.GetIntProp('_CIPRank')
-    except KeyError:
-        # Fallback to atomic number if CIP rank not computed
-        return atom.GetAtomicNum()
+    Z = atom.GetAtomicNum()
+    neighbors = list(atom.GetNeighbors())
+    charge = atom.GetFormalCharge()
+
+    # Sulfur (Z=16)
+    if Z == 16:
+        # Sulfonium ion R₃S⁺ - configurationally stable (e.g., SAM)
+        if charge == 1 and len(neighbors) == 3:
+            return 'sulfonium'
+        # Sulfoxide R₂S=O - check for S=O double bond
+        if len(neighbors) == 3 and charge == 0:
+            for n in neighbors:
+                bond = mol.GetBondBetweenAtoms(atom_idx, n.GetIdx())
+                if bond is not None:
+                    if (bond.GetBondType() == Chem.BondType.DOUBLE and
+                        n.GetAtomicNum() == 8):
+                        return 'sulfoxide'
+
+    # Selenium (Z=34) - selenoxides R₂Se=O
+    if Z == 34 and len(neighbors) == 3 and charge == 0:
+        for n in neighbors:
+            bond = mol.GetBondBetweenAtoms(atom_idx, n.GetIdx())
+            if bond is not None:
+                if (bond.GetBondType() == Chem.BondType.DOUBLE and
+                    n.GetAtomicNum() == 8):
+                    return 'selenoxide'
+
+    # Phosphorus (Z=15)
+    if Z == 15:
+        if len(neighbors) == 4 and charge == 0:
+            # P(V) with 4 neighbors - check specifically for P=O (not P=C or P=N)
+            for n in neighbors:
+                bond = mol.GetBondBetweenAtoms(atom_idx, n.GetIdx())
+                if bond is not None:
+                    if (bond.GetBondType() == Chem.BondType.DOUBLE and
+                        n.GetAtomicNum() == 8):  # Must be oxygen!
+                        return 'phosphine_oxide'
+        elif len(neighbors) == 3 and charge == 0:
+            # P(III) pyramidal phosphine
+            # Note: May have low inversion barrier - include with caution
+            return 'phosphine_pyramidal'
+
+    # Nitrogen (Z=7)
+    if Z == 7:
+        if charge == 1 and len(neighbors) == 4:
+            # Quaternary N⁺ - truly tetrahedral, no lone pair
+            return 'quaternary_N'
+        # Check for aziridine (N in 3-membered ring) - high inversion barrier
+        if charge == 0 and len(neighbors) == 3:
+            ring_info = mol.GetRingInfo()
+            for ring in ring_info.AtomRings():
+                if len(ring) == 3 and atom_idx in ring:
+                    return 'aziridine'
+        # Regular tertiary amine - fast inversion, NOT chiral
+
+    return None
+
+
+def extract_allenes(mol, canonical_ranks: list[int]) -> dict:
+    """
+    Extract allene axial chirality using double-bond pattern.
+
+    Allenes have the pattern C=C=C where the central carbon has exactly
+    2 double-bonded neighbors. Chirality arises when the substituents
+    on each end are different.
+
+    Args:
+        mol: RDKit molecule object with stereochemistry assigned
+        canonical_ranks: Precomputed canonical ranks for all atoms
+
+    Returns:
+        Dictionary with:
+        - allene_centers: List of central atom indices
+        - allene_subs: List of [R1, R2, R3, R4] substituent indices
+    """
+    centers = []
+    subs = []
+
+    for atom in mol.GetAtoms():
+        neighbors = list(atom.GetNeighbors())
+
+        # Allene center has exactly 2 neighbors
+        if len(neighbors) != 2:
+            continue
+
+        # Check both bonds are double
+        bond1 = mol.GetBondBetweenAtoms(atom.GetIdx(), neighbors[0].GetIdx())
+        bond2 = mol.GetBondBetweenAtoms(atom.GetIdx(), neighbors[1].GetIdx())
+
+        if bond1 is None or bond2 is None:
+            continue
+        if not (bond1.GetBondType() == Chem.BondType.DOUBLE and
+                bond2.GetBondType() == Chem.BondType.DOUBLE):
+            continue
+
+        # Valid allene center found
+        center_idx = atom.GetIdx()
+        end1_idx = neighbors[0].GetIdx()
+        end2_idx = neighbors[1].GetIdx()
+
+        # Get substituents on each end (excluding the central carbon)
+        end1_subs = [n.GetIdx() for n in mol.GetAtomWithIdx(end1_idx).GetNeighbors()
+                     if n.GetIdx() != center_idx]
+        end2_subs = [n.GetIdx() for n in mol.GetAtomWithIdx(end2_idx).GetNeighbors()
+                     if n.GetIdx() != center_idx]
+
+        # Need exactly 2 substituents per end for chirality
+        # (if less, it's achiral; if more, it's not a simple allene)
+        if len(end1_subs) != 2 or len(end2_subs) != 2:
+            continue
+
+        # Optional: skip if both ends have identical substituents (achiral)
+        # For now, we extract all and let the model learn to handle achiral cases
+
+        # Sort substituents by canonical rank (lower = higher priority)
+        end1_subs.sort(key=lambda n: canonical_ranks[n])
+        end2_subs.sort(key=lambda n: canonical_ranks[n])
+
+        centers.append(center_idx)
+        subs.append(end1_subs + end2_subs)  # [R1, R2, R3, R4]
+
+    return {
+        'allene_centers': centers,
+        'allene_subs': subs,
+    }
 
 
 def partial_parse_atomic_numbers(smiles: str) -> np.ndarray | None:
@@ -202,6 +356,8 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
         mol = Chem.AddHs(mol)
         Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
         processed_smi = Chem.MolToSmiles(mol, isomericSmiles=True, allHsExplicit=True)
+        # Compute canonical ranks for all atoms (used for consistent CIP-like ordering)
+        canonical_ranks = get_canonical_ranks(mol)
     except Exception as e:
         logger.warning(f"Failed to process SMILES '{smiles}': {e}")
         return None
@@ -245,34 +401,102 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
         return None
 
     # 3) Chiral centers - now storing [center, n1, n2, n3, n4] with CIP ordering
-    # and separately storing the R/S sign
-    chiral_tensors = []  # List of (5,) arrays: [center_idx, neighbor1, neighbor2, neighbor3, neighbor4]
-    chiral_signs = []    # List of floats: R=+1, S=-1, r=+0.5, s=-0.5, ?=0
+    # Supports both tetrahedral (4 neighbors) and pyramidal (3 neighbors + virtual LP)
+    chiral_tensors = []     # List of (5,) arrays: [center_idx, n1, n2, n3, n4]
+    chiral_signs = []       # List of floats: R=+1, S=-1, r=+0.5, s=-0.5, ?=0
+    chiral_is_virtual_lp = []  # List of (4,) bool arrays: True if neighbor is virtual LP
+    chiral_elements = []    # List of atomic numbers for the center atoms
     try:
         chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=True)
+        processed_centers = set()  # Track processed center indices
+
         for center_idx, chirality in chiral_centers:
             center_atom = mol.GetAtomWithIdx(center_idx)
             neighbors = list(center_atom.GetNeighbors())
+            element = center_atom.GetAtomicNum()
 
-            # Only process tetrahedral centers (4 neighbors)
-            if len(neighbors) != 4:
-                continue
+            # Standard tetrahedral centers (4 neighbors)
+            if len(neighbors) == 4:
+                # Sort neighbors by canonical rank (lowest rank = highest priority first)
+                neighbors.sort(key=lambda n: canonical_ranks[n.GetIdx()])
+                neighbor_indices = [n.GetIdx() for n in neighbors]
 
-            # Sort neighbors by CIP rank (lowest rank = highest priority first)
-            neighbors.sort(key=lambda n: get_cip_rank(mol, n.GetIdx()))
-            neighbor_indices = [n.GetIdx() for n in neighbors]
+                chiral_tensors.append(np.array(
+                    [center_idx] + neighbor_indices, dtype=np.int32
+                ))
+                chiral_signs.append(CHIRALITY_SIGNS.get(chirality, 0.0))
+                chiral_is_virtual_lp.append([False, False, False, False])
+                chiral_elements.append(element)
+                processed_centers.add(center_idx)
 
-            # Store [center, n1, n2, n3, n4] - center at position 0
-            chiral_tensors.append(np.array(
-                [center_idx] + neighbor_indices, dtype=np.int32
-            ))
+            # Pyramidal heteroatom centers (3 neighbors + virtual lone pair)
+            elif len(neighbors) == 3:
+                hetero_type = classify_pyramidal_hetero(mol, center_idx)
+                if hetero_type is not None:
+                    # Sort neighbors by canonical rank
+                    neighbors.sort(key=lambda n: canonical_ranks[n.GetIdx()])
+                    neighbor_indices = [n.GetIdx() for n in neighbors]
 
-            # Store the R/S sign (+1/-1 for R/S, +0.5/-0.5 for r/s, 0 for unassigned)
-            chiral_signs.append(CHIRALITY_SIGNS.get(chirality, 0.0))
+                    # Use center index as placeholder for virtual LP (4th position)
+                    # The LP has lowest priority (highest rank) by convention
+                    neighbor_indices.append(center_idx)  # Virtual LP placeholder
+
+                    chiral_tensors.append(np.array(
+                        [center_idx] + neighbor_indices, dtype=np.int32
+                    ))
+                    chiral_signs.append(CHIRALITY_SIGNS.get(chirality, 0.0))
+                    chiral_is_virtual_lp.append([False, False, False, True])  # 4th is LP
+                    chiral_elements.append(element)
+                    processed_centers.add(center_idx)
+
+        # Also check for potential stereocenters using FindPotentialStereo
+        # This catches some cases FindMolChiralCenters may miss
+        try:
+            potential_stereo = list(Chem.FindPotentialStereo(mol))
+            for si in potential_stereo:
+                if si.type != Chem.StereoType.Atom_Tetrahedral:
+                    continue
+                center_idx = si.centeredOn
+                if center_idx in processed_centers:
+                    continue  # Already processed
+
+                center_atom = mol.GetAtomWithIdx(center_idx)
+                neighbors = list(center_atom.GetNeighbors())
+                element = center_atom.GetAtomicNum()
+
+                # Handle pyramidal heteroatoms detected by FindPotentialStereo
+                if len(neighbors) == 3:
+                    hetero_type = classify_pyramidal_hetero(mol, center_idx)
+                    if hetero_type is not None:
+                        neighbors.sort(key=lambda n: canonical_ranks[n.GetIdx()])
+                        neighbor_indices = [n.GetIdx() for n in neighbors]
+                        neighbor_indices.append(center_idx)  # Virtual LP
+
+                        chiral_tensors.append(np.array(
+                            [center_idx] + neighbor_indices, dtype=np.int32
+                        ))
+                        # Use descriptor to determine sign if available
+                        if hasattr(si, 'descriptor') and si.descriptor:
+                            desc_str = str(si.descriptor)
+                            if 'CW' in desc_str or desc_str == 'Tet_CW':
+                                chiral_signs.append(1.0)  # Clockwise ~ R
+                            elif 'CCW' in desc_str or desc_str == 'Tet_CCW':
+                                chiral_signs.append(-1.0)  # Counter-clockwise ~ S
+                            else:
+                                chiral_signs.append(0.0)  # Unassigned
+                        else:
+                            chiral_signs.append(0.0)
+                        chiral_is_virtual_lp.append([False, False, False, True])
+                        chiral_elements.append(element)
+        except Exception as e:
+            logger.debug(f"FindPotentialStereo failed for SMILES '{smiles}': {e}")
+
     except Exception as e:
         logger.warning(f"Failed to compute chiral centers for SMILES '{smiles}': {e}")
         chiral_tensors = []
         chiral_signs = []
+        chiral_is_virtual_lp = []
+        chiral_elements = []
 
     # 4) Cis/Trans bonds
     cis_bonds_list = []
@@ -285,13 +509,15 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
                     # skip STEREONONE, STEREOANY, etc.
                     continue
 
-                # Skip double bonds in small rings (< 8 members) - geometry is constrained
+                # Skip double bonds in rings smaller than 8 members
+                # trans-Cyclooctene (8-membered) is the smallest cycloalkene where E isomer exists
+                # Rings 3-7 are geometrically constrained to cis configuration only
                 if bond.IsInRing():
                     ring_info = mol.GetRingInfo()
                     ring_sizes = [len(r) for r in ring_info.AtomRings()
                                   if bond.GetBeginAtomIdx() in r and bond.GetEndAtomIdx() in r]
                     if any(size < 8 for size in ring_sizes):
-                        continue  # Geometry constrained in small rings
+                        continue  # Skip rings where E isomer cannot exist
 
                 start_atom = bond.GetBeginAtom()
                 end_atom = bond.GetEndAtom()
@@ -313,17 +539,17 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
                 s_high = stereo_atoms[0]
                 e_high = stereo_atoms[1]
 
-                # Identify the "low" substituent on each side using CIP priority
-                # Lower CIP rank = higher priority, so we want the max CIP rank for "low" priority
+                # Identify the "low" substituent on each side using canonical ranks
+                # Lower rank = higher priority, so we want the max rank for "low" priority
                 s_low_candidates = [x for x in start_neighbors if x != s_high]
                 if not s_low_candidates:
                     continue
-                s_low = max(s_low_candidates, key=lambda idx: get_cip_rank(mol, idx))
+                s_low = max(s_low_candidates, key=lambda idx: canonical_ranks[idx])
 
                 e_low_candidates = [x for x in end_neighbors if x != e_high]
                 if not e_low_candidates:
                     continue
-                e_low = max(e_low_candidates, key=lambda idx: get_cip_rank(mol, idx))
+                e_low = max(e_low_candidates, key=lambda idx: canonical_ranks[idx])
 
                 if stereo == Chem.BondStereo.STEREOE:  # E => opposite
                     trans_bonds_list.append([s_high, e_high])  
@@ -350,6 +576,13 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
                     trans_bonds_list.append([e_high, s_low])
     except Exception as e:
         logger.warning(f"Failed to compute cis/trans bonds for SMILES '{smiles}': {e}")
+
+    # 4b) Allene (axial) chirality - C=C=C pattern
+    allene_data = {'allene_centers': [], 'allene_subs': []}
+    try:
+        allene_data = extract_allenes(mol, canonical_ranks)
+    except Exception as e:
+        logger.warning(f"Failed to compute allene chirality for SMILES '{smiles}': {e}")
 
     # 5) Total formal charge
     try:
@@ -399,13 +632,21 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
     cis_bonds_tensors = [np.array(x, dtype=np.int32) for x in cis_bonds_list]
     trans_bonds_tensors = [np.array(x, dtype=np.int32) for x in trans_bonds_list]
 
+    # Convert allene data to numpy arrays
+    allene_centers = np.array(allene_data['allene_centers'], dtype=np.int32)
+    allene_subs = np.array(allene_data['allene_subs'], dtype=np.int32) if allene_data['allene_subs'] else np.array([], dtype=np.int32).reshape(0, 4)
+
     return {
         "multi_hop_edges": multi_hop_edges,
         "atom_features": mapped_atom_features,
-        "chiral_tensors": chiral_tensors,  # Now shape (M, 5): [center, n1, n2, n3, n4]
+        "chiral_tensors": chiral_tensors,  # Shape (M, 5): [center, n1, n2, n3, n4]
         "chiral_signs": np.array(chiral_signs, dtype=np.float32),  # R=+1, S=-1, etc.
+        "chiral_is_virtual_lp": np.array(chiral_is_virtual_lp, dtype=np.bool_) if chiral_is_virtual_lp else np.array([], dtype=np.bool_).reshape(0, 4),  # (M, 4) mask for virtual LPs
+        "chiral_elements": np.array(chiral_elements, dtype=np.int32),  # (M,) atomic numbers of centers
         "cis_bonds_tensors": cis_bonds_tensors,
         "trans_bonds_tensors": trans_bonds_tensors,
+        "allene_centers": allene_centers,  # (M_all,) center atom indices
+        "allene_subs": allene_subs,  # (M_all, 4) [R1, R2, R3, R4] substituent indices
         "total_charge": total_charge,
         "atomic_numbers": atomic_numbers_array,
         "processed_smiles": processed_smi
