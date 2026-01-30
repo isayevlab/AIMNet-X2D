@@ -203,19 +203,21 @@ class GNN(nn.Module):
                 total_charges: torch.Tensor,
                 tetrahedral_indices: torch.Tensor,
                 cis_indices: torch.Tensor,
-                trans_indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+                trans_indices: torch.Tensor,
+                chiral_signs: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """
         Forward pass through the GNN.
-        
+
         Args:
             atom_features: Dictionary of atomic features
             multi_hop_edge_indices: Edge indices for message passing
             batch_indices: Batch indices for each atom
             total_charges: Total formal charges for each molecule
-            tetrahedral_indices: Indices for tetrahedral chiral centers
+            tetrahedral_indices: Indices for tetrahedral chiral centers (shape M, 5)
             cis_indices: Indices for cis bonds
             trans_indices: Indices for trans bonds
-            
+            chiral_signs: R/S chirality signs for each chiral center (R=+1, S=-1)
+
         Returns:
             Tuple of (predictions, attention_weights, partial_charges)
         """
@@ -235,7 +237,7 @@ class GNN(nn.Module):
         # Message passing with optional features
         x_other_updated = self._message_passing_forward(
             x_other, multi_hop_edge_indices, batch_indices, total_charges,
-            tetrahedral_indices, cis_indices, trans_indices
+            tetrahedral_indices, cis_indices, trans_indices, chiral_signs
         )
 
         # Extract partial charges if enabled
@@ -275,17 +277,18 @@ class GNN(nn.Module):
             hybridization_emb,
         ], dim=-1)
 
-    def _message_passing_forward(self, 
+    def _message_passing_forward(self,
                                 x_other: torch.Tensor,
                                 multi_hop_edge_indices: torch.Tensor,
                                 batch_indices: torch.Tensor,
                                 total_charges: torch.Tensor,
                                 tetrahedral_indices: torch.Tensor,
                                 cis_indices: torch.Tensor,
-                                trans_indices: torch.Tensor) -> torch.Tensor:
+                                trans_indices: torch.Tensor,
+                                chiral_signs: torch.Tensor | None = None) -> torch.Tensor:
         """Perform message passing with optional features."""
         x_other_updated = x_other
-        
+
         if multi_hop_edge_indices.numel() > 0:
             for layer in self.message_passing_layers:
                 # Apply partial charge calculation if enabled
@@ -297,7 +300,7 @@ class GNN(nn.Module):
                 # Apply stereochemistry features if enabled
                 if self.use_stereochemistry:
                     x_other_updated = self._apply_stereochemistry(
-                        x_other_updated, tetrahedral_indices, cis_indices, trans_indices
+                        x_other_updated, tetrahedral_indices, cis_indices, trans_indices, chiral_signs
                     )
 
                 # Message passing
@@ -309,56 +312,67 @@ class GNN(nn.Module):
 
         return x_other_updated
 
-    def _apply_stereochemistry(self, 
+    def _apply_stereochemistry(self,
                               x_other: torch.Tensor,
                               tetrahedral_indices: torch.Tensor,
                               cis_indices: torch.Tensor,
-                              trans_indices: torch.Tensor) -> torch.Tensor:
+                              trans_indices: torch.Tensor,
+                              chiral_signs: torch.Tensor | None = None) -> torch.Tensor:
         """Apply stereochemistry features."""
         cis_trans_features = self._cis_trans_calculation(x_other, cis_indices, trans_indices)
-        #print(f"After cis/trans - range: {cis_trans_features.min():.3f} to {cis_trans_features.max():.3f}")
 
-        tetrahedral_features = self._tetrahedral_feature_calculation_physics_inspired(x_other, tetrahedral_indices)
-        #print(f"After tetrahedral - range: {tetrahedral_features.min():.3f} to {tetrahedral_features.max():.3f}")
-
+        tetrahedral_features = self._tetrahedral_feature_calculation_physics_inspired(
+            x_other, tetrahedral_indices, chiral_signs
+        )
 
         x_concat_stereochemistry = torch.cat([
             x_other, cis_trans_features, tetrahedral_features
         ], dim=-1)
-        
+
         return self.stereochemical_embedding_2(x_concat_stereochemistry)
 
-    def _tetrahedral_feature_calculation_physics_inspired(self, 
-                                                            atom_features: torch.Tensor, 
-                                                            tetrahedral_indices: torch.Tensor) -> torch.Tensor:
+    def _tetrahedral_feature_calculation_physics_inspired(self,
+                                                            atom_features: torch.Tensor,
+                                                            tetrahedral_indices: torch.Tensor,
+                                                            chiral_signs: torch.Tensor | None = None) -> torch.Tensor:
         """
-        Your EXACT original tetrahedral equation, but with physics-inspired numerical stability.
-        
+        Compute chirality features using physics-inspired approach with R/S sign encoding.
+
+        Key fixes from original:
+        1. Uses chiral_signs (R=+1, S=-1) to distinguish enantiomers
+        2. tetrahedral_indices now shape (M, 5): [center_idx, n1, n2, n3, n4]
+        3. NO LONGER zeros out non-chiral atoms (was destroying information)
+        4. Features are applied to CENTER atoms only
+
         Original equation preserved:
         chirality_features = (
             squares_1 * (emb_2 - emb_3) +
             squares_2 * (emb_3 - emb_1) +
             squares_3 * (emb_1 - emb_2)
         )
-        
+
         Physics insight applied: Work with normalized directions first, then scale back.
         """
         if tetrahedral_indices.numel() == 0:
             return atom_features
 
+        # Start with a copy
         updated = atom_features.clone()
-        
-        # PHYSICS-INSPIRED STABILITY: Separate direction from magnitude
-        # This is the key insight - your equation works on the directional relationships
-        emb_raw = updated[tetrahedral_indices]  # Shape: (M, 4, D)
-        
+
+        # Extract center indices and neighbor indices
+        # tetrahedral_indices shape: (M, 5) where [0] is center, [1:5] are neighbors
+        center_indices = tetrahedral_indices[:, 0]  # (M,)
+        neighbor_indices = tetrahedral_indices[:, 1:5]  # (M, 4)
+
+        # Get neighbor embeddings
+        emb_raw = updated[neighbor_indices]  # Shape: (M, 4, D)
+
         # Extract magnitude information to preserve later
         emb_magnitudes = torch.norm(emb_raw, dim=-1, keepdim=True)  # (M, 4, 1)
-        
+
         # Work with normalized directions (prevents explosion)
         emb = F.normalize(emb_raw, dim=-1, eps=1e-8)  # (M, 4, D) - unit vectors
-        
-        # YOUR ORIGINAL EQUATION EXACTLY - but on normalized vectors
+
         # Compute squares of normalized vectors (bounded to [0, 1])
         squares = emb ** 2
         squares_1 = torch.roll(squares, shifts=-1, dims=1)
@@ -369,39 +383,39 @@ class GNN(nn.Module):
         emb_2 = torch.roll(emb, shifts=-2, dims=1)
         emb_3 = torch.roll(emb, shifts=-3, dims=1)
 
-        # YOUR EXACT ORIGINAL CHIRALITY EQUATION - no changes!
+        # Original chirality equation
         chirality_features = (
             squares_1 * (emb_2 - emb_3) +
             squares_2 * (emb_3 - emb_1) +
             squares_3 * (emb_1 - emb_2)
         )
-        
-        # PHYSICS-INSPIRED SCALING: Incorporate magnitude information back
-        # The chirality features are now directional relationships
-        # Scale them by the original magnitudes to preserve chemical meaning
-        
+
         # Use the average magnitude of the 4 substituents for each center
         avg_magnitude = torch.mean(emb_magnitudes, dim=1, keepdim=True)  # (M, 1, 1)
-        
+
         # Apply soft magnitude scaling (bounded growth)
-        magnitude_scale = torch.tanh(avg_magnitude / TETRAHEDRAL_MAGNITUDE_SCALE)  # Bounded to [0, 1] roughly
-        
-        # Scale the chirality features by magnitude information
+        magnitude_scale = torch.tanh(avg_magnitude / TETRAHEDRAL_MAGNITUDE_SCALE)
+
+        # Scale by magnitude
         chirality_features = chirality_features * magnitude_scale
-        
-        # YOUR ORIGINAL ACCUMULATION LOGIC - unchanged
-        idx = tetrahedral_indices.reshape(-1)
-        chirality_flat = chirality_features.reshape(-1, updated.shape[-1])
 
-        # Accumulate chirality contributions
-        updated.index_add_(0, idx, chirality_flat)
+        # Apply R/S chirality sign - THIS IS THE KEY FIX FOR ENANTIOMER DISTINGUISHABILITY
+        # R configuration -> +1, S configuration -> -1
+        # This preserves the mirror-image relationship between enantiomers
+        if chiral_signs is not None and chiral_signs.numel() > 0:
+            sign_scale = chiral_signs.view(-1, 1, 1)  # (M, 1, 1)
+            chirality_features = chirality_features * sign_scale
 
-        # Zero out non-chiral atoms - your original logic
-        if tetrahedral_indices.numel() > 0:
-            chiral_atoms = torch.unique(idx)
-            mask = torch.zeros(updated.shape[0], dtype=torch.bool, device=updated.device)
-            mask[chiral_atoms] = True
-            updated[~mask] = 0.0
+        # Sum across the 4 neighbors to get per-center features
+        chirality_summed = chirality_features.sum(dim=1)  # (M, D)
+
+        # Apply chirality features to CENTER atoms (not neighbors)
+        # This is additive - we don't zero out non-chiral atoms
+        updated.index_add_(0, center_indices, chirality_summed)
+
+        # NO ZEROING OF NON-CHIRAL ATOMS
+        # Previous bug: updated[~mask] = 0.0 destroyed all non-chiral atom features
+        # Non-chiral atoms contain important chemical information (ring atoms, functional groups, etc.)
 
         return updated
 

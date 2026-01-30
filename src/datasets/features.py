@@ -25,6 +25,32 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Mapping from CIP designation to signed scalar value
+# R/S are standard designations; r/s are pseudo-asymmetric
+CHIRALITY_SIGNS = {'R': 1.0, 'S': -1.0, 'r': 0.5, 's': -0.5}
+
+
+def get_cip_rank(mol, atom_idx: int) -> int:
+    """
+    Get CIP rank for atom, with fallback to atomic number.
+
+    CIP (Cahn-Ingold-Prelog) ranks are used to determine priority
+    in stereochemistry assignments. Higher priority = lower rank number.
+
+    Args:
+        mol: RDKit molecule object
+        atom_idx: Index of the atom
+
+    Returns:
+        CIP rank (lower = higher priority), or atomic number as fallback
+    """
+    atom = mol.GetAtomWithIdx(atom_idx)
+    try:
+        return atom.GetIntProp('_CIPRank')
+    except KeyError:
+        # Fallback to atomic number if CIP rank not computed
+        return atom.GetAtomicNum()
+
 
 def partial_parse_atomic_numbers(smiles: str) -> np.ndarray | None:
     """Quick parse of SMILES to get atomic numbers only."""
@@ -218,17 +244,35 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
         logger.warning(f"Failed to extract atomic numbers for SMILES '{smiles}': {e}")
         return None
 
-    # 3) Chiral centers
+    # 3) Chiral centers - now storing [center, n1, n2, n3, n4] with CIP ordering
+    # and separately storing the R/S sign
+    chiral_tensors = []  # List of (5,) arrays: [center_idx, neighbor1, neighbor2, neighbor3, neighbor4]
+    chiral_signs = []    # List of floats: R=+1, S=-1, r=+0.5, s=-0.5, ?=0
     try:
         chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=True)
-        chiral_tensors = []
         for center_idx, chirality in chiral_centers:
             center_atom = mol.GetAtomWithIdx(center_idx)
-            neighbors = [nbr.GetIdx() for nbr in center_atom.GetNeighbors()]
-            chiral_tensors.append(np.array(neighbors, dtype=np.int32))
+            neighbors = list(center_atom.GetNeighbors())
+
+            # Only process tetrahedral centers (4 neighbors)
+            if len(neighbors) != 4:
+                continue
+
+            # Sort neighbors by CIP rank (lowest rank = highest priority first)
+            neighbors.sort(key=lambda n: get_cip_rank(mol, n.GetIdx()))
+            neighbor_indices = [n.GetIdx() for n in neighbors]
+
+            # Store [center, n1, n2, n3, n4] - center at position 0
+            chiral_tensors.append(np.array(
+                [center_idx] + neighbor_indices, dtype=np.int32
+            ))
+
+            # Store the R/S sign (+1/-1 for R/S, +0.5/-0.5 for r/s, 0 for unassigned)
+            chiral_signs.append(CHIRALITY_SIGNS.get(chirality, 0.0))
     except Exception as e:
         logger.warning(f"Failed to compute chiral centers for SMILES '{smiles}': {e}")
         chiral_tensors = []
+        chiral_signs = []
 
     # 4) Cis/Trans bonds
     cis_bonds_list = []
@@ -240,6 +284,14 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
                 if stereo not in [Chem.BondStereo.STEREOZ, Chem.BondStereo.STEREOE]:
                     # skip STEREONONE, STEREOANY, etc.
                     continue
+
+                # Skip double bonds in small rings (< 8 members) - geometry is constrained
+                if bond.IsInRing():
+                    ring_info = mol.GetRingInfo()
+                    ring_sizes = [len(r) for r in ring_info.AtomRings()
+                                  if bond.GetBeginAtomIdx() in r and bond.GetEndAtomIdx() in r]
+                    if any(size < 8 for size in ring_sizes):
+                        continue  # Geometry constrained in small rings
 
                 start_atom = bond.GetBeginAtom()
                 end_atom = bond.GetEndAtom()
@@ -261,16 +313,17 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
                 s_high = stereo_atoms[0]
                 e_high = stereo_atoms[1]
 
-                # Identify the "low" substituent on each side
+                # Identify the "low" substituent on each side using CIP priority
+                # Lower CIP rank = higher priority, so we want the max CIP rank for "low" priority
                 s_low_candidates = [x for x in start_neighbors if x != s_high]
                 if not s_low_candidates:
                     continue
-                s_low = min(s_low_candidates, key=lambda idx: mol.GetAtomWithIdx(idx).GetAtomicNum())
+                s_low = max(s_low_candidates, key=lambda idx: get_cip_rank(mol, idx))
 
                 e_low_candidates = [x for x in end_neighbors if x != e_high]
                 if not e_low_candidates:
                     continue
-                e_low = min(e_low_candidates, key=lambda idx: mol.GetAtomWithIdx(idx).GetAtomicNum())
+                e_low = max(e_low_candidates, key=lambda idx: get_cip_rank(mol, idx))
 
                 if stereo == Chem.BondStereo.STEREOE:  # E => opposite
                     trans_bonds_list.append([s_high, e_high])  
@@ -342,14 +395,15 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
         logger.warning(f"Failed to map atom features for SMILES '{smiles}': {e}")
         return None
 
-    chiral_tensors = [np.array(x, dtype=np.int32) for x in chiral_tensors]
+    # chiral_tensors are already np.int32 arrays from the loop above
     cis_bonds_tensors = [np.array(x, dtype=np.int32) for x in cis_bonds_list]
     trans_bonds_tensors = [np.array(x, dtype=np.int32) for x in trans_bonds_list]
 
     return {
         "multi_hop_edges": multi_hop_edges,
         "atom_features": mapped_atom_features,
-        "chiral_tensors": chiral_tensors,
+        "chiral_tensors": chiral_tensors,  # Now shape (M, 5): [center, n1, n2, n3, n4]
+        "chiral_signs": np.array(chiral_signs, dtype=np.float32),  # R=+1, S=-1, etc.
         "cis_bonds_tensors": cis_bonds_tensors,
         "trans_bonds_tensors": trans_bonds_tensors,
         "total_charge": total_charge,

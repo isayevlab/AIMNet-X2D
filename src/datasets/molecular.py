@@ -88,7 +88,9 @@ class PyGSMILESDataset(InMemoryDataset):
             data.atom_features_map = atom_feats_map
 
             # Chirality / cis / trans
+            # chiral_tensors now have shape (5,): [center_idx, n1, n2, n3, n4]
             data.chiral_tensors = [torch.from_numpy(x).long() for x in precomp["chiral_tensors"]]
+            data.chiral_signs = torch.from_numpy(precomp["chiral_signs"]).float()
             data.cis_bonds_tensors = [torch.from_numpy(x).long() for x in precomp["cis_bonds_tensors"]]
             data.trans_bonds_tensors = [torch.from_numpy(x).long() for x in precomp["trans_bonds_tensors"]]
 
@@ -318,9 +320,11 @@ class HDF5MolecularIterableDataset(torch.utils.data.IterableDataset):
             atom_feats_map[k] = torch.from_numpy(arr).long()
         data_obj.atom_features_map = atom_feats_map
 
+        # chiral_tensors now have shape (5,): [center_idx, n1, n2, n3, n4]
         data_obj.chiral_tensors = [
             torch.from_numpy(x).long() for x in precomp["chiral_tensors"]
         ]
+        data_obj.chiral_signs = torch.from_numpy(precomp["chiral_signs"]).float()
         data_obj.cis_bonds_tensors = [
             torch.from_numpy(x).long() for x in precomp["cis_bonds_tensors"]
         ]
@@ -361,13 +365,20 @@ class MolecularBatch(Batch):
         ])
 
         # 2) Collect + offset chirality/cis/trans
+        # chiral_tensors now have shape (5,): [center_idx, n1, n2, n3, n4]
         shifted_chiral_centers = []
+        chiral_signs_list = []
         shifted_cis_bonds = []
         shifted_trans_bonds = []
         for i, d in enumerate(data_list):
             offset = atom_offsets[i]
-            # Chirality
-            shifted_chiral_centers.extend(ch + offset for ch in d.chiral_tensors if ch.size(0) == 4)
+            # Chirality - now expects shape (5,)
+            for ch in d.chiral_tensors:
+                if ch.size(0) == 5:  # [center, n1, n2, n3, n4]
+                    shifted_chiral_centers.append(ch + offset)
+            # Collect chiral signs for this molecule
+            if hasattr(d, 'chiral_signs') and d.chiral_signs.numel() > 0:
+                chiral_signs_list.extend(d.chiral_signs.tolist())
             # Cis
             shifted_cis_bonds.extend(bond + offset for bond in d.cis_bonds_tensors)
             # Trans
@@ -376,7 +387,12 @@ class MolecularBatch(Batch):
         final_tetrahedral_chiral_tensor = (
             torch.stack(shifted_chiral_centers, dim=0)
             if shifted_chiral_centers
-            else torch.empty((0, 4), dtype=torch.long)
+            else torch.empty((0, 5), dtype=torch.long)
+        )
+        chiral_signs_tensor = (
+            torch.tensor(chiral_signs_list, dtype=torch.float)
+            if chiral_signs_list
+            else torch.empty((0,), dtype=torch.float)
         )
         cis_bonds_tensor = (
             torch.stack(shifted_cis_bonds, dim=0)
@@ -452,6 +468,7 @@ class MolecularBatch(Batch):
         batch.total_charges = total_charges
 
         batch.final_tetrahedral_chiral_tensor = final_tetrahedral_chiral_tensor
+        batch.chiral_signs = chiral_signs_tensor
         batch.final_cis_tensor = final_cis_tensor
         batch.final_trans_tensor = final_trans_tensor
         batch.smiles_list = smiles_list
