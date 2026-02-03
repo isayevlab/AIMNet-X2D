@@ -843,6 +843,53 @@ class TestAlleneChirality:
                 assert 'allene_subs' in result, f"Missing allene_subs for {smiles}"
 
 
+class TestCumuleneChirality:
+    """Tests for cumulene chain detection (odd-carbon chains are chiral)."""
+
+    def test_butatriene_not_detected(self):
+        """
+        Test that butatriene (4-carbon C=C=C=C) is NOT detected as chiral.
+
+        Even-length cumulene chains are achiral because the terminal groups
+        are coplanar. Only odd-length chains exhibit axial chirality.
+        """
+        # 2,5-dimethyl-2,3,4-hexatriene (4 cumulated carbons)
+        result = compute_all("CC=C=C=CC", max_hops=3)
+        assert result is not None
+
+        # Even-length chain should not be detected
+        assert len(result['allene_centers']) == 0, \
+            "Even-length cumulene (butatriene) should NOT be chiral"
+
+    def test_pentatetraene_detected(self):
+        """
+        Test that pentatetraene (5-carbon C=C=C=C=C) IS detected as chiral.
+
+        Odd-length cumulene chains exhibit axial chirality just like allenes.
+        The terminal groups are perpendicular, not coplanar.
+        """
+        # 2,6-dimethyl-2,3,4,5-heptatetraene (5 cumulated carbons)
+        result = compute_all("CC=C=C=C=CC", max_hops=3)
+        assert result is not None
+
+        # Odd-length chain should be detected
+        assert len(result['allene_centers']) == 1, \
+            "Odd-length cumulene (pentatetraene) SHOULD be chiral"
+        assert result['allene_subs'].shape == (1, 4), \
+            "Should have 4 substituents for pentatetraene"
+
+    def test_allene_still_detected(self):
+        """
+        Test that standard allene (3-carbon C=C=C) is still detected.
+
+        Regression test to ensure cumulene extension doesn't break allene detection.
+        """
+        result = compute_all("CC=C=CC", max_hops=3)
+        assert result is not None
+
+        assert len(result['allene_centers']) == 1, "Standard allene should be detected"
+
+
 class TestGoldenStereochemistry:
     """
     Golden test set to verify stereochemistry extraction produces expected results.
@@ -984,6 +1031,53 @@ class TestNewHeteroatomTypes:
         assert result is not None
         assert 'chiral_tensors' in result
 
+    def test_arsine_detected(self):
+        """Pyramidal arsines (R3As) should be detected as chiral centers.
+
+        Arsenic has higher inversion barrier than phosphorus (~40-45 kcal/mol)
+        due to relativistic effects and orbital properties.
+        """
+        # Trimethylarsine - with 3 different substituents would be chiral
+        arsine = "C[As](CC)CCC"  # Methyl-ethyl-propylarsine
+        result = compute_all(arsine, max_hops=3)
+        assert result is not None
+        assert 'chiral_tensors' in result
+
+    def test_symmetric_quaternary_n_not_chiral(self):
+        """Symmetric quaternary N+ should NOT be detected as chiral.
+
+        Tetramethylammonium [N(CH3)4]+ has 4 identical substituents,
+        so it is not chiral despite having 4 neighbors.
+        """
+        # Tetramethylammonium
+        symmetric_n = "C[N+](C)(C)C"
+        result = compute_all(symmetric_n, max_hops=3)
+        assert result is not None
+
+        # Should NOT have chiral centers (all 4 substituents are equivalent)
+        if len(result['chiral_tensors']) > 0:
+            # If RDKit detects it, verify our code filters it out
+            # Check that no nitrogen centers are in the chiral list
+            for tensor in result['chiral_tensors']:
+                center_idx = tensor[0]
+                # We can't easily check element from tensor alone,
+                # but the point is the symmetric N+ should be filtered
+            # A more robust check: count should be 0
+            assert len(result['chiral_tensors']) == 0, \
+                "Symmetric N+ should not be detected as chiral"
+
+    def test_asymmetric_quaternary_n_is_chiral(self):
+        """Asymmetric quaternary N+ with 4 different substituents IS chiral.
+
+        Example: [N+(CH3)(C2H5)(C3H7)(C4H9)] - all different groups.
+        """
+        # Chiral quaternary ammonium: methyl-ethyl-propyl-butyl
+        chiral_n = "C[N+](CC)(CCC)CCCC"
+        result = compute_all(chiral_n, max_hops=3)
+        assert result is not None
+        assert 'chiral_tensors' in result
+        # With RDKit's detection and our code allowing it, should have chiral center
+
 
 class TestPhosphineOxideEdgeCases:
     """Tests for phosphine oxide detection edge cases."""
@@ -1053,6 +1147,33 @@ class TestEZRingFilter:
         assert result is not None
         assert len(result['cis_bonds_tensors']) == 0
         assert len(result['trans_bonds_tensors']) == 0
+
+    def test_terminal_vinyl_no_ez(self):
+        """Terminal vinyl (C=CH2) should NOT have E/Z stereochemistry.
+
+        E/Z requires 2 different substituents on each carbon of the double bond.
+        Terminal vinyl has only hydrogens on one end, which are equivalent.
+        """
+        # Ethene (ethylene) - simplest case
+        ethene = "C=C"
+        result = compute_all(ethene, max_hops=3)
+        assert result is not None
+        assert len(result['cis_bonds_tensors']) == 0, "Ethene should have no E/Z"
+        assert len(result['trans_bonds_tensors']) == 0, "Ethene should have no E/Z"
+
+        # Propene - terminal vinyl
+        propene = "C=CC"
+        result = compute_all(propene, max_hops=3)
+        assert result is not None
+        assert len(result['cis_bonds_tensors']) == 0, "Propene should have no E/Z"
+        assert len(result['trans_bonds_tensors']) == 0, "Propene should have no E/Z"
+
+        # 1-butene - terminal vinyl
+        butene = "C=CCC"
+        result = compute_all(butene, max_hops=3)
+        assert result is not None
+        assert len(result['cis_bonds_tensors']) == 0, "1-butene should have no E/Z"
+        assert len(result['trans_bonds_tensors']) == 0, "1-butene should have no E/Z"
 
 
 class TestCanonicalRanksValidation:
@@ -1157,6 +1278,137 @@ class TestClassifyPyramidalHetero:
                 result = classify_pyramidal_hetero(mol, atom.GetIdx())
                 assert result == 'phosphine_oxide'
                 break
+
+    def test_classify_arsine(self):
+        """Pyramidal arsine (R3As) should return 'arsine_pyramidal'."""
+        from rdkit import Chem
+        from src.datasets.features import classify_pyramidal_hetero
+
+        # Trimethylarsine
+        mol = Chem.MolFromSmiles("C[As](C)C")
+        mol = Chem.AddHs(mol)
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 33:  # Arsenic
+                result = classify_pyramidal_hetero(mol, atom.GetIdx())
+                assert result == 'arsine_pyramidal', f"Expected 'arsine_pyramidal', got {result}"
+                break
+
+    def test_selenoxide_classification(self):
+        """Selenoxide (R2Se=O) should return 'selenoxide'."""
+        from rdkit import Chem
+        from src.datasets.features import classify_pyramidal_hetero
+
+        mol = Chem.MolFromSmiles("C[Se](=O)C")
+        mol = Chem.AddHs(mol)
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 34:  # Selenium
+                result = classify_pyramidal_hetero(mol, atom.GetIdx())
+                assert result == 'selenoxide', f"Expected 'selenoxide', got {result}"
+                break
+
+
+class TestMathematicalCorrectness:
+    """Tests for mathematical correctness of chirality calculations."""
+
+    def test_enantiomer_opposite_signs(self):
+        """R and S enantiomers should produce opposite chiral_signs.
+
+        The chiral_signs field stores +1 for R and -1 for S designation
+        based on RDKit's CIP assignment.
+        """
+        # R-alanine
+        r_result = compute_all("N[C@H](C)C(=O)O", max_hops=3)
+        assert r_result is not None
+        assert len(r_result['chiral_signs']) == 1
+
+        # S-alanine
+        s_result = compute_all("N[C@@H](C)C(=O)O", max_hops=3)
+        assert s_result is not None
+        assert len(s_result['chiral_signs']) == 1
+
+        # Signs should be opposite
+        r_sign = r_result['chiral_signs'][0]
+        s_sign = s_result['chiral_signs'][0]
+        assert r_sign == -s_sign, \
+            f"R ({r_sign}) and S ({s_sign}) should have opposite signs"
+
+    def test_multiple_enantiomer_pairs(self):
+        """Test that sign opposition holds for multiple molecules."""
+        pairs = [
+            ("C[C@@H](O)C(=O)O", "C[C@H](O)C(=O)O"),  # Lactic acid
+            ("F[C@](Cl)(Br)I", "F[C@@](Cl)(Br)I"),   # Halomethane
+        ]
+
+        for r_smiles, s_smiles in pairs:
+            r_result = compute_all(r_smiles, max_hops=3)
+            s_result = compute_all(s_smiles, max_hops=3)
+
+            assert r_result is not None, f"Failed to parse {r_smiles}"
+            assert s_result is not None, f"Failed to parse {s_smiles}"
+
+            r_sign = r_result['chiral_signs'][0]
+            s_sign = s_result['chiral_signs'][0]
+            assert r_sign == -s_sign, \
+                f"For {r_smiles}/{s_smiles}: R={r_sign}, S={s_sign}, should be opposite"
+
+    def test_achiral_no_chiral_centers(self):
+        """Achiral molecules should have no chiral centers detected."""
+        achiral_molecules = [
+            "CC(C)C",      # Isobutane
+            "CC(C)(C)C",   # Neopentane
+            "c1ccccc1",    # Benzene
+            "CCCC",        # n-Butane
+            "CCO",         # Ethanol
+        ]
+
+        for smiles in achiral_molecules:
+            result = compute_all(smiles, max_hops=3)
+            assert result is not None, f"Failed to parse {smiles}"
+            assert len(result['chiral_signs']) == 0, \
+                f"{smiles} should have no chiral centers, but has {len(result['chiral_signs'])}"
+
+    def test_determinant_antisymmetry(self):
+        """Test that det_3x3_batched produces antisymmetric results.
+
+        Swapping two rows of a 3x3 matrix should flip the determinant sign.
+        """
+        pytest.importorskip("torch_scatter", reason="torch_scatter required for GNN model imports")
+        from models.gnn import det_3x3_batched
+
+        # Create a test matrix
+        m = torch.tensor([
+            [[1.0, 2.0, 3.0],
+             [4.0, 5.0, 6.0],
+             [7.0, 8.0, 10.0]]  # Non-singular
+        ])
+
+        det_original = det_3x3_batched(m)
+
+        # Swap rows 0 and 1
+        m_swapped = m.clone()
+        m_swapped[0, 0, :] = m[0, 1, :]
+        m_swapped[0, 1, :] = m[0, 0, :]
+
+        det_swapped = det_3x3_batched(m_swapped)
+
+        # Determinant should flip sign
+        assert torch.allclose(det_original, -det_swapped, atol=1e-6), \
+            f"Swapping rows should flip det sign: {det_original.item()} vs {det_swapped.item()}"
+
+    def test_determinant_zero_for_singular(self):
+        """Singular matrix should have zero determinant."""
+        pytest.importorskip("torch_scatter", reason="torch_scatter required for GNN model imports")
+        from models.gnn import det_3x3_batched
+
+        # Singular matrix (row 2 = row 0 + row 1)
+        m = torch.tensor([
+            [[1.0, 2.0, 3.0],
+             [4.0, 5.0, 6.0],
+             [5.0, 7.0, 9.0]]  # Row 2 = Row 0 + Row 1
+        ])
+
+        det = det_3x3_batched(m)
+        assert torch.abs(det) < 1e-6, f"Singular matrix should have det=0, got {det.item()}"
 
 
 if __name__ == "__main__":

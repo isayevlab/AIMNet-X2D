@@ -5,6 +5,8 @@ This module contains the primary GNN architecture that combines
 shell convolution layers, pooling, and feed-forward networks.
 """
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,6 +18,23 @@ from utils.activation import get_activation_function
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def det_3x3_batched(m: torch.Tensor) -> torch.Tensor:
+    """
+    Fast explicit 3x3 determinant for batched matrices.
+
+    Args:
+        m: Tensor of shape (B, 3, 3) containing batch of 3x3 matrices
+
+    Returns:
+        Tensor of shape (B,) containing determinants
+    """
+    return (
+        m[:, 0, 0] * (m[:, 1, 1] * m[:, 2, 2] - m[:, 1, 2] * m[:, 2, 1]) -
+        m[:, 0, 1] * (m[:, 1, 0] * m[:, 2, 2] - m[:, 1, 2] * m[:, 2, 0]) +
+        m[:, 0, 2] * (m[:, 1, 0] * m[:, 2, 1] - m[:, 1, 1] * m[:, 2, 0])
+    )
 
 
 class GNN(nn.Module):
@@ -190,11 +209,81 @@ class GNN(nn.Module):
     def _create_processing_layers(self, hidden_dim: int, activation_type: str) -> None:
         """Create layers for feature processing and stereochemistry."""
         self.concat_self_other = nn.Linear(hidden_dim, hidden_dim)
-        
+
         if self.use_stereochemistry:
-            # Stereochemistry processing layers
+            # Stereochemistry processing layers (legacy)
             self.stereochemical_embedding = nn.Linear(hidden_dim * 3, hidden_dim)
             self.stereochemical_embedding_2 = nn.Linear(self.x_other_dim * 3, self.x_other_dim)
+
+            # V3 tetrahedral chirality layers (oriented volume approach)
+            # Pre-normalization for consistent scale
+            self.tet_pre_norm = nn.LayerNorm(self.x_other_dim)
+
+            # Projection from embeddings to 3D for determinant computation
+            self.tet_W_proj = nn.Linear(self.x_other_dim, 3, bias=False)
+            nn.init.xavier_uniform_(self.tet_W_proj.weight, gain=2.0)
+
+            # Output projection from concatenated neighbors
+            self.tet_U_out = nn.Linear(4 * self.x_other_dim, self.x_other_dim)
+            nn.init.xavier_uniform_(self.tet_U_out.weight)
+            nn.init.zeros_(self.tet_U_out.bias)
+
+            # Learnable temperature (clamped in forward to prevent division by zero)
+            self.tet_tau_V = nn.Parameter(torch.tensor(1.0))
+
+            # Confidence thresholds for degenerate case handling
+            self.tet_eps_conf = 0.01
+            self.tet_delta_conf = 0.1
+
+            # Learnable virtual lone pair embedding for pyramidal heteroatoms
+            # This replaces the self-reference (center_idx as placeholder) with a
+            # semantically meaningful embedding representing the LP "substituent"
+            self.virtual_lp_embedding = nn.Parameter(torch.randn(self.x_other_dim) * 0.01)
+
+            # Register constant tensors as buffers (not recreated each forward)
+            # Triplet indices for parity-corrected symmetrization
+            self.register_buffer('tet_triplet_indices',
+                torch.tensor([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]], dtype=torch.long))
+            # Signs for antisymmetry: verified that swapping any two neighbors flips V_sym sign
+            self.register_buffer('tet_triplet_signs',
+                torch.tensor([1.0, -1.0, 1.0, -1.0]))
+
+            # StereoMixer: per-dimension sigmoid gates for combining stereo contributions
+            # Unlike softmax, sigmoid gates allow multiple stereo types to contribute
+            # independently without competition (each dimension can be 0 to 1)
+            # Output dim = D for per-dimension gating (more expressive than scalar gates)
+            self.stereo_gate_tet = nn.Linear(self.x_other_dim, self.x_other_dim)
+            self.stereo_gate_ez = nn.Linear(self.x_other_dim, self.x_other_dim)
+            self.stereo_gate_overall = nn.Linear(self.x_other_dim, self.x_other_dim)
+            # Initialize gates for ~50% initial contribution:
+            # - Small random weights to break symmetry across dimensions
+            # - Per-type bias = 0.5 → sigmoid(0.5) ≈ 0.62
+            # - Overall bias = 0.0 → sigmoid(0) = 0.5
+            # Total: 0.5 * (0.62 * g_tet + 0.62 * g_ez) ≈ 0.31 per stereo type
+            nn.init.normal_(self.stereo_gate_tet.weight, std=0.01)
+            nn.init.normal_(self.stereo_gate_ez.weight, std=0.01)
+            nn.init.normal_(self.stereo_gate_overall.weight, std=0.01)
+            nn.init.constant_(self.stereo_gate_tet.bias, 0.5)
+            nn.init.constant_(self.stereo_gate_ez.bias, 0.5)
+            nn.init.constant_(self.stereo_gate_overall.bias, 0.0)
+
+            # V3 Allene/Cumulene axial chirality layers
+            # Antisymmetric bilinear form: s = d1^T M d2 where M = M_raw - M_raw^T
+            # The antisymmetry ensures s flips sign when swapping substituents (P/M enantiomers)
+            self.allene_W_a = nn.Linear(self.x_other_dim, self.x_other_dim, bias=False)
+            self.allene_W_b = nn.Linear(self.x_other_dim, self.x_other_dim, bias=False)
+            # Raw matrix - antisymmetric M is computed as M_raw - M_raw.T
+            self.allene_M_raw = nn.Parameter(torch.randn(self.x_other_dim, self.x_other_dim) * 0.01)
+            # Output projection
+            self.allene_U_out = nn.Linear(self.x_other_dim, self.x_other_dim)
+            nn.init.xavier_uniform_(self.allene_W_a.weight)
+            nn.init.xavier_uniform_(self.allene_W_b.weight)
+            nn.init.xavier_uniform_(self.allene_U_out.weight)
+            nn.init.zeros_(self.allene_U_out.bias)
+            # Gate for allene contribution (per-dimension like others)
+            self.stereo_gate_allene = nn.Linear(self.x_other_dim, self.x_other_dim)
+            nn.init.normal_(self.stereo_gate_allene.weight, std=0.01)
+            nn.init.constant_(self.stereo_gate_allene.bias, 0.5)
 
     def forward(self,
                 atom_features: dict[str, torch.Tensor],
@@ -204,7 +293,10 @@ class GNN(nn.Module):
                 tetrahedral_indices: torch.Tensor,
                 cis_indices: torch.Tensor,
                 trans_indices: torch.Tensor,
-                chiral_signs: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+                chiral_signs: torch.Tensor | None = None,
+                chiral_is_virtual_lp: torch.Tensor | None = None,
+                allene_centers: torch.Tensor | None = None,
+                allene_subs: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """
         Forward pass through the GNN.
 
@@ -217,6 +309,9 @@ class GNN(nn.Module):
             cis_indices: Indices for cis bonds
             trans_indices: Indices for trans bonds
             chiral_signs: R/S chirality signs for each chiral center (R=+1, S=-1)
+            chiral_is_virtual_lp: Boolean mask (M, 4) indicating virtual lone pairs in neighbors
+            allene_centers: Indices of allene/cumulene central atoms (shape M_all,)
+            allene_subs: Substituent indices for allenes (shape M_all, 4) [R1, R2, R3, R4]
 
         Returns:
             Tuple of (predictions, attention_weights, partial_charges)
@@ -237,7 +332,8 @@ class GNN(nn.Module):
         # Message passing with optional features
         x_other_updated = self._message_passing_forward(
             x_other, multi_hop_edge_indices, batch_indices, total_charges,
-            tetrahedral_indices, cis_indices, trans_indices, chiral_signs
+            tetrahedral_indices, cis_indices, trans_indices, chiral_signs,
+            chiral_is_virtual_lp, allene_centers, allene_subs
         )
 
         # Extract partial charges if enabled
@@ -285,7 +381,10 @@ class GNN(nn.Module):
                                 tetrahedral_indices: torch.Tensor,
                                 cis_indices: torch.Tensor,
                                 trans_indices: torch.Tensor,
-                                chiral_signs: torch.Tensor | None = None) -> torch.Tensor:
+                                chiral_signs: torch.Tensor | None = None,
+                                chiral_is_virtual_lp: torch.Tensor | None = None,
+                                allene_centers: torch.Tensor | None = None,
+                                allene_subs: torch.Tensor | None = None) -> torch.Tensor:
         """Perform message passing with optional features."""
         x_other_updated = x_other
 
@@ -300,7 +399,8 @@ class GNN(nn.Module):
                 # Apply stereochemistry features if enabled
                 if self.use_stereochemistry:
                     x_other_updated = self._apply_stereochemistry(
-                        x_other_updated, tetrahedral_indices, cis_indices, trans_indices, chiral_signs
+                        x_other_updated, tetrahedral_indices, cis_indices, trans_indices,
+                        chiral_signs, chiral_is_virtual_lp, allene_centers, allene_subs
                     )
 
                 # Message passing
@@ -317,134 +417,203 @@ class GNN(nn.Module):
                               tetrahedral_indices: torch.Tensor,
                               cis_indices: torch.Tensor,
                               trans_indices: torch.Tensor,
-                              chiral_signs: torch.Tensor | None = None) -> torch.Tensor:
-        """Apply stereochemistry features."""
-        cis_trans_features = self._cis_trans_calculation(x_other, cis_indices, trans_indices)
+                              chiral_signs: torch.Tensor | None = None,
+                              chiral_is_virtual_lp: torch.Tensor | None = None,
+                              allene_centers: torch.Tensor | None = None,
+                              allene_subs: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        Apply stereochemistry features using sigmoid-gated mixing.
 
-        tetrahedral_features = self._tetrahedral_feature_calculation_physics_inspired(
-            x_other, tetrahedral_indices, chiral_signs
+        V3 Implementation:
+        Unlike softmax which forces competition between stereo types, sigmoid gates
+        allow each type (tetrahedral, E/Z, allene) to contribute independently:
+        - w_tet, w_ez, w_allene in [0, 1] - each can be high or low independently
+        - w_overall in [0, 1] - controls total stereo contribution
+
+        Formula: h_new = h + w_overall * (w_tet * g_tet + w_ez * g_ez + w_allene * g_allene)
+        """
+        # Compute tetrahedral delta (g_tet = updated - original)
+        tetrahedral_updated = self._tetrahedral_feature_calculation_physics_inspired(
+            x_other, tetrahedral_indices, chiral_signs, chiral_is_virtual_lp
         )
+        g_tet = tetrahedral_updated - x_other
 
-        x_concat_stereochemistry = torch.cat([
-            x_other, cis_trans_features, tetrahedral_features
-        ], dim=-1)
+        # Compute E/Z delta (g_ez = updated - original)
+        cis_trans_updated = self._cis_trans_calculation(x_other, cis_indices, trans_indices)
+        g_ez = cis_trans_updated - x_other
 
-        return self.stereochemical_embedding_2(x_concat_stereochemistry)
+        # Compute allene delta (g_allene = updated - original)
+        allene_updated = self._allene_feature_calculation(x_other, allene_centers, allene_subs)
+        g_allene = allene_updated - x_other
+
+        # Apply sigmoid gates - per-dimension gating (N, D)
+        # Each gate learns independent per-feature weights based on current features
+        w_tet = torch.sigmoid(self.stereo_gate_tet(x_other))      # (N, D)
+        w_ez = torch.sigmoid(self.stereo_gate_ez(x_other))        # (N, D)
+        w_allene = torch.sigmoid(self.stereo_gate_allene(x_other))  # (N, D)
+
+        # Weighted combination of stereo deltas (element-wise gating)
+        combined_delta = w_tet * g_tet + w_ez * g_ez + w_allene * g_allene  # (N, D)
+
+        # Overall gate controls total stereo contribution per dimension
+        w_overall = torch.sigmoid(self.stereo_gate_overall(x_other))  # (N, D)
+
+        # Apply gated stereo features
+        return x_other + w_overall * combined_delta
 
     def _tetrahedral_feature_calculation_physics_inspired(self,
                                                             atom_features: torch.Tensor,
                                                             tetrahedral_indices: torch.Tensor,
-                                                            chiral_signs: torch.Tensor | None = None) -> torch.Tensor:
+                                                            chiral_signs: torch.Tensor | None = None,
+                                                            chiral_is_virtual_lp: torch.Tensor | None = None) -> torch.Tensor:
         """
-        Compute chirality features using physics-inspired approach with R/S sign encoding.
+        Compute chirality features using oriented volume with parity-corrected symmetrization.
 
-        Key fixes from original:
-        1. Uses chiral_signs (R=+1, S=-1) to distinguish enantiomers
-        2. tetrahedral_indices now shape (M, 5): [center_idx, n1, n2, n3, n4]
-        3. NO LONGER zeros out non-chiral atoms (was destroying information)
-        4. Features are applied to CENTER atoms only
+        V3 Implementation:
+        1. Pre-normalize embeddings with LayerNorm for consistent scale
+        2. Project neighbor-relative vectors to 3D for determinant computation
+        3. Compute parity-corrected oriented volume: (+det012 - det013 + det023 - det123) / 4
+        4. Scale-invariant normalization: V_norm = V_sym / (prod(||v||))^(1/3)
+        5. Clamped temperature tanh for bounded output
+        6. Confidence weighting to downweight degenerate cases
+        7. Apply R/S sign for enantiomer distinguishability
 
-        Original equation preserved:
-        chirality_features = (
-            squares_1 * (emb_2 - emb_3) +
-            squares_2 * (emb_3 - emb_1) +
-            squares_3 * (emb_1 - emb_2)
-        )
+        For pyramidal heteroatoms with virtual lone pairs, the 4th neighbor position
+        uses a learnable embedding instead of the center atom (which would create
+        a zero vector and lose information).
 
-        Physics insight applied: Work with normalized directions first, then scale back.
+        Args:
+            atom_features: Node embeddings (N, D)
+            tetrahedral_indices: Shape (M, 5) where [0] is center, [1:5] are neighbors
+            chiral_signs: R/S signs (M,) - R=+1, S=-1
+            chiral_is_virtual_lp: Boolean mask (M, 4) indicating virtual LPs in neighbor positions
+
+        Returns:
+            Updated atom features with chirality information added to center atoms
         """
         if tetrahedral_indices.numel() == 0:
             return atom_features
 
         # Start with a copy
         updated = atom_features.clone()
+        device = atom_features.device
+        M = tetrahedral_indices.shape[0]
+        D = atom_features.shape[1]
 
         # Extract center indices and neighbor indices
-        # tetrahedral_indices shape: (M, 5) where [0] is center, [1:5] are neighbors
         center_indices = tetrahedral_indices[:, 0]  # (M,)
         neighbor_indices = tetrahedral_indices[:, 1:5]  # (M, 4)
 
-        # Get neighbor embeddings
-        emb_raw = updated[neighbor_indices]  # Shape: (M, 4, D)
+        # Pre-normalize embeddings for consistent scale
+        h_norm = self.tet_pre_norm(atom_features)
 
-        # Extract magnitude information to preserve later
-        emb_magnitudes = torch.norm(emb_raw, dim=-1, keepdim=True)  # (M, 4, 1)
+        # Get center and neighbor embeddings
+        h_center = h_norm[center_indices]  # (M, D)
+        h_neigh = h_norm[neighbor_indices]  # (M, 4, D)
 
-        # Work with normalized directions (prevents explosion)
-        emb = F.normalize(emb_raw, dim=-1, eps=1e-8)  # (M, 4, D) - unit vectors
+        # Handle virtual lone pairs: replace self-reference (center) with learnable LP embedding
+        # For pyramidal heteroatoms, the 4th position is a virtual LP (h_neigh == h_center)
+        # which would give a zero vector in the determinant. Instead, use a semantically
+        # meaningful learnable embedding.
+        if chiral_is_virtual_lp is not None and chiral_is_virtual_lp.numel() > 0:
+            # chiral_is_virtual_lp: (M, 4) boolean mask
+            lp_mask = chiral_is_virtual_lp.to(device)  # (M, 4)
+            # Expand LP embedding for broadcasting: (D,) -> (M, 4, D)
+            lp_emb_expanded = self.virtual_lp_embedding.unsqueeze(0).unsqueeze(0).expand(M, 4, -1)
+            # Apply normalized LP embedding only where mask is True
+            lp_emb_norm = self.tet_pre_norm.weight * self.virtual_lp_embedding + self.tet_pre_norm.bias
+            lp_emb_norm_expanded = lp_emb_norm.unsqueeze(0).unsqueeze(0).expand(M, 4, -1)
+            # Replace virtual LP positions with LP embedding
+            h_neigh = torch.where(lp_mask.unsqueeze(-1), lp_emb_norm_expanded, h_neigh)
 
-        # Compute squares of normalized vectors (bounded to [0, 1])
-        squares = emb ** 2
-        squares_1 = torch.roll(squares, shifts=-1, dims=1)
-        squares_2 = torch.roll(squares, shifts=-2, dims=1)
-        squares_3 = torch.roll(squares, shifts=-3, dims=1)
+        # Compute neighbor-relative vectors and project to 3D
+        # v_j = W_proj(h_neigh_j - h_center)
+        v = self.tet_W_proj(h_neigh - h_center.unsqueeze(1))  # (M, 4, 3)
 
-        emb_1 = torch.roll(emb, shifts=-1, dims=1)
-        emb_2 = torch.roll(emb, shifts=-2, dims=1)
-        emb_3 = torch.roll(emb, shifts=-3, dims=1)
+        # Compute parity-corrected oriented volume using triplet determinants
+        # Signs: +det(012), -det(013), +det(023), -det(123)
+        # These signs ensure V_sym flips sign under odd permutations (R/S swap)
+        # Use pre-registered buffers for efficiency (not recreated each forward)
 
-        # Original chirality equation
-        chirality_features = (
-            squares_1 * (emb_2 - emb_3) +
-            squares_2 * (emb_3 - emb_1) +
-            squares_3 * (emb_1 - emb_2)
+        # Extract triplets: v_triplets[m, t, :, :] is the (3, 3) matrix for center m, triplet t
+        v_triplets = v[:, self.tet_triplet_indices, :]  # (M, 4, 3, 3)
+
+        # Compute determinants for all triplets
+        dets = det_3x3_batched(v_triplets.view(-1, 3, 3)).view(M, 4)  # (M, 4)
+
+        # Parity-corrected symmetrization
+        V_sym = (dets * self.tet_triplet_signs).sum(dim=1) / 4.0  # (M,)
+
+        # Scale-invariant normalization: divide by geometric mean of edge lengths
+        # Use first 3 vectors (avoiding the 4th which may be virtual LP)
+        # Clamp norms to prevent numerical instability from near-zero vectors
+        v_norms = torch.norm(v[:, :3, :], dim=-1).clamp(min=1e-6)  # (M, 3)
+        norm_product = torch.prod(v_norms, dim=1) ** (1.0 / 3.0)  # (M,)
+        V_norm = V_sym / norm_product
+
+        # Clamped temperature for stable tanh
+        tau = torch.clamp(self.tet_tau_V, min=0.01)
+        s = torch.tanh(V_norm / tau)  # (M,)
+
+        # Confidence weighting: downweight near-degenerate cases
+        # confidence approaches 0 when |V_norm| is very small
+        confidence = torch.sigmoid(
+            (torch.abs(V_norm) - self.tet_eps_conf) / self.tet_delta_conf
         )
+        s = s * confidence
 
-        # Use the average magnitude of the 4 substituents for each center
-        avg_magnitude = torch.mean(emb_magnitudes, dim=1, keepdim=True)  # (M, 1, 1)
-
-        # Apply soft magnitude scaling (bounded growth)
-        magnitude_scale = torch.tanh(avg_magnitude / TETRAHEDRAL_MAGNITUDE_SCALE)
-
-        # Scale by magnitude
-        chirality_features = chirality_features * magnitude_scale
-
-        # Apply R/S chirality sign - THIS IS THE KEY FIX FOR ENANTIOMER DISTINGUISHABILITY
-        # R configuration -> +1, S configuration -> -1
-        # This preserves the mirror-image relationship between enantiomers
+        # Apply R/S chirality sign for enantiomer distinguishability
         if chiral_signs is not None and chiral_signs.numel() > 0:
-            sign_scale = chiral_signs.view(-1, 1, 1)  # (M, 1, 1)
-            chirality_features = chirality_features * sign_scale
+            s = s * chiral_signs
 
-        # Sum across the 4 neighbors to get per-center features
-        chirality_summed = chirality_features.sum(dim=1)  # (M, D)
+        # Compute chiral feature from concatenated neighbor embeddings
+        # Use original (non-normalized) embeddings for richer features
+        h_neigh_orig = updated[neighbor_indices]  # (M, 4, D)
+        # Also replace virtual LP positions in the original embeddings
+        if chiral_is_virtual_lp is not None and chiral_is_virtual_lp.numel() > 0:
+            lp_mask = chiral_is_virtual_lp.to(device)  # (M, 4)
+            lp_emb_expanded = self.virtual_lp_embedding.unsqueeze(0).unsqueeze(0).expand(M, 4, -1)
+            h_neigh_orig = torch.where(lp_mask.unsqueeze(-1), lp_emb_expanded, h_neigh_orig)
+        h_concat = h_neigh_orig.reshape(M, 4 * D)  # (M, 4D)
+        f_tet = s.unsqueeze(-1) * self.tet_U_out(h_concat)  # (M, D)
 
-        # Apply chirality features to CENTER atoms (not neighbors)
-        # This is additive - we don't zero out non-chiral atoms
-        updated.index_add_(0, center_indices, chirality_summed)
-
-        # NO ZEROING OF NON-CHIRAL ATOMS
-        # Previous bug: updated[~mask] = 0.0 destroyed all non-chiral atom features
-        # Non-chiral atoms contain important chemical information (ring atoms, functional groups, etc.)
+        # Scatter to center atoms (additive, preserves non-chiral atom features)
+        updated.index_add_(0, center_indices, f_tet)
 
         return updated
 
 
-    def _cis_trans_calculation(self, 
-                              atom_features: torch.Tensor, 
-                              cis_indices: torch.Tensor, 
+    def _cis_trans_calculation(self,
+                              atom_features: torch.Tensor,
+                              cis_indices: torch.Tensor,
                               trans_indices: torch.Tensor) -> torch.Tensor:
         """
         Calculate cis/trans bond features efficiently.
-        
+
         Applies cis/trans geometric constraints to bond features
         using scatter operations.
+
+        Args:
+            atom_features: Node embeddings (N, D)
+            cis_indices: Cis bond pairs, shape (M_cis, 2) as [source, target]
+            trans_indices: Trans bond pairs, shape (M_trans, 2) as [source, target]
         """
         if cis_indices.numel() == 0 and trans_indices.numel() == 0:
             return atom_features
 
         # Get source features for cis and trans bonds
+        # Note: tensors have shape (M, 2) where [:, 0] is source and [:, 1] is target
         if cis_indices.numel() > 0:
-            source_cis_nodes = cis_indices[0]
-            target_cis_nodes = cis_indices[1]
+            source_cis_nodes = cis_indices[:, 0]
+            target_cis_nodes = cis_indices[:, 1]
             source_cis_features = atom_features[source_cis_nodes]
         else:
             target_cis_nodes = torch.empty(0, dtype=torch.long, device=atom_features.device)
             source_cis_features = torch.empty(0, atom_features.shape[1], device=atom_features.device)
 
         if trans_indices.numel() > 0:
-            source_trans_nodes = trans_indices[0]
-            target_trans_nodes = trans_indices[1]
+            source_trans_nodes = trans_indices[:, 0]
+            target_trans_nodes = trans_indices[:, 1]
             source_trans_features = atom_features[source_trans_nodes]
         else:
             target_trans_nodes = torch.empty(0, dtype=torch.long, device=atom_features.device)
@@ -465,6 +634,78 @@ class GNN(nn.Module):
             updated_features = atom_features
 
         return updated_features
+
+    def _allene_feature_calculation(self,
+                                   atom_features: torch.Tensor,
+                                   allene_centers: torch.Tensor | None,
+                                   allene_subs: torch.Tensor | None) -> torch.Tensor:
+        """
+        Compute allene/cumulene axial chirality features using antisymmetric bilinear form.
+
+        V3 Implementation:
+        For allenes R1R2-C=C=C-R3R4, chirality arises from the perpendicular π-systems.
+        We compute: s_allene = d1^T M d2 where M = M_raw - M_raw^T (antisymmetric)
+
+        The antisymmetry ensures:
+        - Swapping R1↔R2 or R3↔R4 flips the sign (P/M enantiomers)
+        - The scalar s distinguishes between axial enantiomers
+
+        Args:
+            atom_features: Node embeddings (N, D)
+            allene_centers: Central atom indices for each allene (M_all,)
+            allene_subs: Substituent indices (M_all, 4) as [R1, R2, R3, R4]
+
+        Returns:
+            Updated atom features with allene chirality information
+        """
+        if allene_centers is None or allene_subs is None:
+            return atom_features
+        if allene_centers.numel() == 0:
+            return atom_features
+
+        # Start with a copy
+        updated = atom_features.clone()
+        M_all = allene_centers.shape[0]
+
+        # Extract center indices
+        center_indices = allene_centers  # (M_all,)
+
+        # Extract substituent embeddings
+        # allene_subs: (M_all, 4) as [R1, R2, R3, R4]
+        h_R1 = atom_features[allene_subs[:, 0]]  # (M_all, D)
+        h_R2 = atom_features[allene_subs[:, 1]]  # (M_all, D)
+        h_R3 = atom_features[allene_subs[:, 2]]  # (M_all, D)
+        h_R4 = atom_features[allene_subs[:, 3]]  # (M_all, D)
+
+        # Compute difference vectors for each end
+        # d1 = W_a(R1 - R2) captures the asymmetry at the first terminal carbon
+        # d2 = W_b(R3 - R4) captures the asymmetry at the second terminal carbon
+        d1 = self.allene_W_a(h_R1 - h_R2)  # (M_all, D)
+        d2 = self.allene_W_b(h_R3 - h_R4)  # (M_all, D)
+
+        # Compute antisymmetric M matrix: M = M_raw - M_raw^T
+        M = self.allene_M_raw - self.allene_M_raw.T  # (D, D)
+
+        # Compute bilinear form: s = d1^T M d2
+        # s_allene[i] = sum_j sum_k d1[i,j] * M[j,k] * d2[i,k]
+        # = sum_k (d1 @ M)[i,k] * d2[i,k]
+        # Scale by sqrt(D) to prevent tanh saturation (similar to attention scaling)
+        D = atom_features.shape[1]
+        s_allene = torch.sum((d1 @ M) * d2, dim=-1, keepdim=True) / math.sqrt(D)  # (M_all, 1)
+
+        # Create chirality feature from scalar
+        # tanh bounds output to [-1, 1], then project to hidden dim
+        chirality_sign = torch.tanh(s_allene)  # (M_all, 1)
+
+        # Get center embeddings and combine with chirality signal
+        h_center = atom_features[center_indices]  # (M_all, D)
+        chirality_feature = chirality_sign * h_center  # (M_all, D)
+
+        # Project and update center atoms
+        delta = self.allene_U_out(chirality_feature)  # (M_all, D)
+        updated.index_add_(0, center_indices, delta)
+
+        return updated
 
     def _partial_charge_calculation(self, 
                                    atom_features: torch.Tensor, 
@@ -521,6 +762,15 @@ class GNN(nn.Module):
             linear_layers.extend([
                 self.stereochemical_embedding,
                 self.stereochemical_embedding_2
+            ])
+
+        # Add allene layers if they exist (excluding stereo gates which have custom init)
+        if hasattr(self, 'allene_W_a'):
+            linear_layers.extend([
+                self.allene_W_a,
+                self.allene_W_b,
+                self.allene_U_out,
+                # NOTE: stereo_gate_allene excluded - has custom bias init (0.5) in _create_processing_layers
             ])
 
         # Initialize linear layers

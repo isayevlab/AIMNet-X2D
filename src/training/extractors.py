@@ -44,6 +44,10 @@ def extract_partial_charges(model, data_loader, device) -> list[tuple[str, list[
         tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
         cis_indices = batch.final_cis_tensor.to(device)
         trans_indices = batch.final_trans_tensor.to(device)
+        chiral_signs = batch.chiral_signs.to(device) if batch.chiral_signs.numel() > 0 else None
+        chiral_is_virtual_lp = batch.chiral_is_virtual_lp.to(device) if batch.chiral_is_virtual_lp.numel() > 0 else None
+        allene_centers = batch.allene_centers.to(device) if batch.allene_centers.numel() > 0 else None
+        allene_subs = batch.allene_subs.to(device) if batch.allene_subs.numel() > 0 else None
 
         # Forward pass with partial charges
         _, _, partial_charges = model(
@@ -53,7 +57,11 @@ def extract_partial_charges(model, data_loader, device) -> list[tuple[str, list[
             total_charges,
             tetrahedral_indices,
             cis_indices,
-            trans_indices
+            trans_indices,
+            chiral_signs,
+            chiral_is_virtual_lp,
+            allene_centers,
+            allene_subs
         )
 
         # Skip if partial_charges is None
@@ -147,6 +155,10 @@ def extract_all_embeddings(
             tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
             cis_indices = batch.final_cis_tensor.to(device)
             trans_indices = batch.final_trans_tensor.to(device)
+            chiral_signs = batch.chiral_signs.to(device) if batch.chiral_signs.numel() > 0 else None
+            chiral_is_virtual_lp = batch.chiral_is_virtual_lp.to(device) if batch.chiral_is_virtual_lp.numel() > 0 else None
+            allene_centers = batch.allene_centers.to(device) if batch.allene_centers.numel() > 0 else None
+            allene_subs = batch.allene_subs.to(device) if batch.allene_subs.numel() > 0 else None
 
             # Forward pass to trigger the hooks
             _ = model(
@@ -156,7 +168,11 @@ def extract_all_embeddings(
                 total_charges,
                 tetrahedral_indices,
                 cis_indices,
-                trans_indices
+                trans_indices,
+                chiral_signs,
+                chiral_is_virtual_lp,
+                allene_centers,
+                allene_subs
             )
             
             # Save molecule embeddings
@@ -365,7 +381,11 @@ def extract_embeddings_main(args, model, train_loader, val_loader, test_loader, 
                 tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
                 cis_indices = batch.final_cis_tensor.to(device)
                 trans_indices = batch.final_trans_tensor.to(device)
-                
+                chiral_signs = batch.chiral_signs.to(device) if batch.chiral_signs.numel() > 0 else None
+                chiral_is_virtual_lp = batch.chiral_is_virtual_lp.to(device) if batch.chiral_is_virtual_lp.numel() > 0 else None
+                allene_centers = batch.allene_centers.to(device) if batch.allene_centers.numel() > 0 else None
+                allene_subs = batch.allene_subs.to(device) if batch.allene_subs.numel() > 0 else None
+
                 # Forward pass triggers hooks
                 _ = model(
                     batch_atom_features,
@@ -374,7 +394,11 @@ def extract_embeddings_main(args, model, train_loader, val_loader, test_loader, 
                     total_charges,
                     tetrahedral_indices,
                     cis_indices,
-                    trans_indices
+                    trans_indices,
+                    chiral_signs,
+                    chiral_is_virtual_lp,
+                    allene_centers,
+                    allene_subs
                 )
         
         # Process molecule embeddings

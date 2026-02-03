@@ -70,6 +70,10 @@ def predict_gnn(
         tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
         cis_indices = batch.final_cis_tensor.to(device)
         trans_indices = batch.final_trans_tensor.to(device)
+        chiral_signs = batch.chiral_signs.to(device) if batch.chiral_signs.numel() > 0 else None
+        chiral_is_virtual_lp = batch.chiral_is_virtual_lp.to(device) if batch.chiral_is_virtual_lp.numel() > 0 else None
+        allene_centers = batch.allene_centers.to(device) if batch.allene_centers.numel() > 0 else None
+        allene_subs = batch.allene_subs.to(device) if batch.allene_subs.numel() > 0 else None
 
         # Forward pass
         outputs, _, _ = model(
@@ -79,7 +83,11 @@ def predict_gnn(
             total_charges,
             tetrahedral_indices,
             cis_indices,
-            trans_indices
+            trans_indices,
+            chiral_signs,
+            chiral_is_virtual_lp,
+            allene_centers,
+            allene_subs
         )
 
         # Process evidential outputs to get predictions
@@ -194,6 +202,10 @@ def predict_with_mc_dropout(
             tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
             cis_indices = batch.final_cis_tensor.to(device)
             trans_indices = batch.final_trans_tensor.to(device)
+            chiral_signs = batch.chiral_signs.to(device) if batch.chiral_signs.numel() > 0 else None
+            chiral_is_virtual_lp = batch.chiral_is_virtual_lp.to(device) if batch.chiral_is_virtual_lp.numel() > 0 else None
+            allene_centers = batch.allene_centers.to(device) if batch.allene_centers.numel() > 0 else None
+            allene_subs = batch.allene_subs.to(device) if batch.allene_subs.numel() > 0 else None
 
             # Forward pass
             outputs, _, _ = model(
@@ -203,12 +215,16 @@ def predict_with_mc_dropout(
                 total_charges,
                 tetrahedral_indices,
                 cis_indices,
-                trans_indices
+                trans_indices,
+                chiral_signs,
+                chiral_is_virtual_lp,
+                allene_centers,
+                allene_subs
             )
-            
+
             # Process evidential outputs
             outputs = _process_evidential_outputs(outputs, model)
-            
+
             sample_preds.append(outputs.detach().cpu().numpy())
             
             # FIXED: Update progress bar per batch
@@ -301,6 +317,10 @@ def predict_gnn_with_smiles(
         tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
         cis_indices = batch.final_cis_tensor.to(device)
         trans_indices = batch.final_trans_tensor.to(device)
+        chiral_signs = batch.chiral_signs.to(device) if batch.chiral_signs.numel() > 0 else None
+        chiral_is_virtual_lp = batch.chiral_is_virtual_lp.to(device) if batch.chiral_is_virtual_lp.numel() > 0 else None
+        allene_centers = batch.allene_centers.to(device) if batch.allene_centers.numel() > 0 else None
+        allene_subs = batch.allene_subs.to(device) if batch.allene_subs.numel() > 0 else None
 
         # Forward pass
         outputs, _, _ = model(
@@ -310,7 +330,11 @@ def predict_gnn_with_smiles(
             total_charges,
             tetrahedral_indices,
             cis_indices,
-            trans_indices
+            trans_indices,
+            chiral_signs,
+            chiral_is_virtual_lp,
+            allene_centers,
+            allene_subs
         )
 
         # Process evidential outputs
@@ -389,6 +413,10 @@ def predict_evidential_with_uncertainty(
         tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
         cis_indices = batch.final_cis_tensor.to(device)
         trans_indices = batch.final_trans_tensor.to(device)
+        chiral_signs = batch.chiral_signs.to(device) if batch.chiral_signs.numel() > 0 else None
+        chiral_is_virtual_lp = batch.chiral_is_virtual_lp.to(device) if batch.chiral_is_virtual_lp.numel() > 0 else None
+        allene_centers = batch.allene_centers.to(device) if batch.allene_centers.numel() > 0 else None
+        allene_subs = batch.allene_subs.to(device) if batch.allene_subs.numel() > 0 else None
 
         # Forward pass
         outputs, _, _ = model(
@@ -398,7 +426,11 @@ def predict_evidential_with_uncertainty(
             total_charges,
             tetrahedral_indices,
             cis_indices,
-            trans_indices
+            trans_indices,
+            chiral_signs,
+            chiral_is_virtual_lp,
+            allene_centers,
+            allene_subs
         )
 
         # Process evidential outputs to get predictions and uncertainties
@@ -634,6 +666,10 @@ def predict_batch_with_processing(
     tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
     cis_indices = batch.final_cis_tensor.to(device)
     trans_indices = batch.final_trans_tensor.to(device)
+    chiral_signs = batch.chiral_signs.to(device) if batch.chiral_signs.numel() > 0 else None
+    chiral_is_virtual_lp = batch.chiral_is_virtual_lp.to(device) if batch.chiral_is_virtual_lp.numel() > 0 else None
+    allene_centers = batch.allene_centers.to(device) if batch.allene_centers.numel() > 0 else None
+    allene_subs = batch.allene_subs.to(device) if batch.allene_subs.numel() > 0 else None
 
     # Forward pass
     outputs, _, _ = model(
@@ -643,7 +679,11 @@ def predict_batch_with_processing(
         total_charges,
         tetrahedral_indices,
         cis_indices,
-        trans_indices
+        trans_indices,
+        chiral_signs,
+        chiral_is_virtual_lp,
+        allene_centers,
+        allene_subs
     )
 
     # Process outputs based on whether uncertainty is requested

@@ -194,6 +194,10 @@ def _training_epoch(
         tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(device)
         cis_indices = batch.final_cis_tensor.to(device)
         trans_indices = batch.final_trans_tensor.to(device)
+        chiral_signs = batch.chiral_signs.to(device) if batch.chiral_signs.numel() > 0 else None
+        chiral_is_virtual_lp = batch.chiral_is_virtual_lp.to(device) if batch.chiral_is_virtual_lp.numel() > 0 else None
+        allene_centers = batch.allene_centers.to(device) if batch.allene_centers.numel() > 0 else None
+        allene_subs = batch.allene_subs.to(device) if batch.allene_subs.numel() > 0 else None
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -207,9 +211,13 @@ def _training_epoch(
                     total_charges,
                     tetrahedral_indices,
                     cis_indices,
-                    trans_indices
+                    trans_indices,
+                    chiral_signs,
+                    chiral_is_virtual_lp,
+                    allene_centers,
+                    allene_subs
                 )
-                
+
                 loss = criterion(outputs, targets)
             scaler.scale(loss).backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRADIENT_CLIP_MAX_NORM)
@@ -223,7 +231,11 @@ def _training_epoch(
                 total_charges,
                 tetrahedral_indices,
                 cis_indices,
-                trans_indices
+                trans_indices,
+                chiral_signs,
+                chiral_is_virtual_lp,
+                allene_centers,
+                allene_subs
             )
             if torch.isnan(outputs).any():
                 logger.warning("NaN found in outputs!")

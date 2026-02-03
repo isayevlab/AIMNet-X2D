@@ -109,6 +109,10 @@ class EmbeddingExtractor:
         tetrahedral_indices = batch.final_tetrahedral_chiral_tensor.to(self.device)
         cis_indices = batch.final_cis_tensor.to(self.device)
         trans_indices = batch.final_trans_tensor.to(self.device)
+        chiral_signs = batch.chiral_signs.to(self.device) if batch.chiral_signs.numel() > 0 else None
+        chiral_is_virtual_lp = batch.chiral_is_virtual_lp.to(self.device) if batch.chiral_is_virtual_lp.numel() > 0 else None
+        allene_centers = batch.allene_centers.to(self.device) if batch.allene_centers.numel() > 0 else None
+        allene_subs = batch.allene_subs.to(self.device) if batch.allene_subs.numel() > 0 else None
 
         # Forward pass (triggers hooks)
         with torch.no_grad():
@@ -119,7 +123,11 @@ class EmbeddingExtractor:
                 total_charges,
                 tetrahedral_indices,
                 cis_indices,
-                trans_indices
+                trans_indices,
+                chiral_signs,
+                chiral_is_virtual_lp,
+                allene_centers,
+                allene_subs
             )
 
         # Process embeddings

@@ -383,18 +383,25 @@ class MolecularBatch(Batch):
         chiral_signs_list = []
         chiral_is_virtual_lp_list = []
         chiral_elements_list = []
+        tet_batch_list = []  # Track molecule index for each chiral center
         shifted_cis_bonds = []
+        cis_batch_list = []  # Track molecule index for each cis bond
         shifted_trans_bonds = []
+        trans_batch_list = []  # Track molecule index for each trans bond
         shifted_allene_centers = []
         shifted_allene_subs = []
+        allene_batch_list = []  # Track molecule index for each allene center
         for i, d in enumerate(data_list):
             offset = atom_offsets[i]
             # Chirality - now expects shape (5,)
+            num_chiral_in_mol = 0
             for ch in d.chiral_tensors:
                 if ch.size(0) == 5:  # [center, n1, n2, n3, n4]
                     shifted_chiral_centers.append(ch + offset)
+                    num_chiral_in_mol += 1
                 elif ch.size(0) != 0:
                     logger.warning(f"Unexpected chiral tensor size {ch.size(0)}, expected 5. Skipping.")
+            tet_batch_list.extend([i] * num_chiral_in_mol)
             # Collect chiral signs for this molecule
             if hasattr(d, 'chiral_signs') and d.chiral_signs.numel() > 0:
                 chiral_signs_list.extend(d.chiral_signs.tolist())
@@ -408,12 +415,18 @@ class MolecularBatch(Batch):
             if hasattr(d, 'chiral_elements') and d.chiral_elements.numel() > 0:
                 chiral_elements_list.append(d.chiral_elements)
             # Cis
+            num_cis = len(d.cis_bonds_tensors)
             shifted_cis_bonds.extend(bond + offset for bond in d.cis_bonds_tensors)
+            cis_batch_list.extend([i] * num_cis)
             # Trans
+            num_trans = len(d.trans_bonds_tensors)
             shifted_trans_bonds.extend(bond + offset for bond in d.trans_bonds_tensors)
+            trans_batch_list.extend([i] * num_trans)
             # Allene centers and substituents
             if hasattr(d, 'allene_centers') and d.allene_centers.numel() > 0:
+                num_allenes = d.allene_centers.numel()
                 shifted_allene_centers.append(d.allene_centers + offset)
+                allene_batch_list.extend([i] * num_allenes)
             if hasattr(d, 'allene_subs') and d.allene_subs.numel() > 0:
                 shifted_allene_subs.append(d.allene_subs + offset)
 
@@ -458,10 +471,38 @@ class MolecularBatch(Batch):
             else torch.empty((0, 4), dtype=torch.long)
         )
 
+        # Create batch index tensors for stereochemistry elements
+        # These track which molecule in the batch each stereo element belongs to
+        tet_batch_tensor = torch.tensor(tet_batch_list, dtype=torch.long) if tet_batch_list else torch.empty((0,), dtype=torch.long)
+        cis_batch_tensor = torch.tensor(cis_batch_list, dtype=torch.long) if cis_batch_list else torch.empty((0,), dtype=torch.long)
+        trans_batch_tensor = torch.tensor(trans_batch_list, dtype=torch.long) if trans_batch_list else torch.empty((0,), dtype=torch.long)
+        allene_batch_tensor = torch.tensor(allene_batch_list, dtype=torch.long) if allene_batch_list else torch.empty((0,), dtype=torch.long)
+
         # Note: features.py already adds both directions for cis/trans pairs
         # so no reversal needed here
         final_cis_tensor = cis_bonds_tensor if cis_bonds_tensor.numel() > 0 else torch.empty((0, 2), dtype=torch.long)
         final_trans_tensor = trans_bonds_tensor if trans_bonds_tensor.numel() > 0 else torch.empty((0, 2), dtype=torch.long)
+
+        # Validate cis/trans tensor shapes
+        if final_cis_tensor.numel() > 0 and (final_cis_tensor.dim() != 2 or final_cis_tensor.shape[1] != 2):
+            logger.warning(f"Unexpected cis_tensor shape {final_cis_tensor.shape}, expected (N, 2). Resetting to empty.")
+            final_cis_tensor = torch.empty((0, 2), dtype=torch.long)
+        if final_trans_tensor.numel() > 0 and (final_trans_tensor.dim() != 2 or final_trans_tensor.shape[1] != 2):
+            logger.warning(f"Unexpected trans_tensor shape {final_trans_tensor.shape}, expected (N, 2). Resetting to empty.")
+            final_trans_tensor = torch.empty((0, 2), dtype=torch.long)
+
+        # Validate allene center/subs correspondence
+        if allene_centers_tensor.numel() > 0 or allene_subs_tensor.numel() > 0:
+            num_allene_centers = allene_centers_tensor.shape[0] if allene_centers_tensor.dim() >= 1 else 0
+            num_allene_subs = allene_subs_tensor.shape[0] if allene_subs_tensor.dim() >= 1 else 0
+            if num_allene_centers != num_allene_subs:
+                logger.warning(
+                    f"Allene centers ({num_allene_centers}) and subs ({num_allene_subs}) count mismatch. "
+                    "Resetting both to empty."
+                )
+                allene_centers_tensor = torch.empty((0,), dtype=torch.long)
+                allene_subs_tensor = torch.empty((0, 4), dtype=torch.long)
+                allene_batch_tensor = torch.empty((0,), dtype=torch.long)
 
         # 4) Concatenate atom features
         feature_keys = list(data_list[0].atom_features_map.keys())
@@ -517,10 +558,14 @@ class MolecularBatch(Batch):
         batch.chiral_signs = chiral_signs_tensor
         batch.chiral_is_virtual_lp = chiral_is_virtual_lp_tensor
         batch.chiral_elements = chiral_elements_tensor
+        batch.tet_batch = tet_batch_tensor  # Molecule index for each chiral center
         batch.final_cis_tensor = final_cis_tensor
+        batch.cis_batch = cis_batch_tensor  # Molecule index for each cis bond
         batch.final_trans_tensor = final_trans_tensor
+        batch.trans_batch = trans_batch_tensor  # Molecule index for each trans bond
         batch.allene_centers = allene_centers_tensor
         batch.allene_subs = allene_subs_tensor
+        batch.allene_batch = allene_batch_tensor  # Molecule index for each allene
         batch.smiles_list = smiles_list
 
         # For PyG usage

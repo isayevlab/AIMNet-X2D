@@ -74,6 +74,7 @@ def classify_pyramidal_hetero(mol, atom_idx: int) -> str | None:
         'selenoxide' - R₂Se=O (stable ~35 kcal/mol inversion barrier)
         'phosphine_oxide' - R₃P=O (configurationally stable)
         'phosphine_pyramidal' - R₃P (may have low barrier, include with caution)
+        'arsine_pyramidal' - R₃As (higher barrier than P, ~40-45 kcal/mol)
         'quaternary_N' - R₄N⁺ (truly tetrahedral, no lone pair)
         'aziridine' - N in 3-membered ring (high inversion barrier ~15 kcal/mol)
         None - not a stable chiral center (e.g., tertiary amines)
@@ -106,6 +107,11 @@ def classify_pyramidal_hetero(mol, atom_idx: int) -> str | None:
                     n.GetAtomicNum() == 8):
                     return 'selenoxide'
 
+    # Arsenic (Z=33) - pyramidal arsines R₃As
+    # Higher inversion barrier than phosphorus (~40-45 kcal/mol)
+    if Z == 33 and len(neighbors) == 3 and charge == 0:
+        return 'arsine_pyramidal'
+
     # Phosphorus (Z=15)
     if Z == 15:
         if len(neighbors) == 4 and charge == 0:
@@ -125,6 +131,8 @@ def classify_pyramidal_hetero(mol, atom_idx: int) -> str | None:
     if Z == 7:
         if charge == 1 and len(neighbors) == 4:
             # Quaternary N⁺ - truly tetrahedral, no lone pair
+            # NOTE: Uniqueness check (all 4 substituents different) is done in
+            # compute_stereochemistry_features() since canonical_ranks are needed
             return 'quaternary_N'
         # Check for aziridine (N in 3-membered ring) - high inversion barrier
         if charge == 0 and len(neighbors) == 3:
@@ -137,13 +145,93 @@ def classify_pyramidal_hetero(mol, atom_idx: int) -> str | None:
     return None
 
 
+def _trace_cumulene_chain(mol, start_idx: int, visited: set) -> list[int] | None:
+    """
+    Trace a cumulene chain starting from a given atom.
+
+    Cumulenes are chains of sp-hybridized carbons connected by cumulated
+    double bonds: C=C=C (allene), C=C=C=C (butatriene), C=C=C=C=C, etc.
+
+    Args:
+        mol: RDKit molecule object
+        start_idx: Starting atom index (must be part of cumulated double bond)
+        visited: Set of already-visited atom indices (to avoid double-counting)
+
+    Returns:
+        List of atom indices forming the cumulene chain (ordered), or None if invalid
+    """
+    if start_idx in visited:
+        return None
+
+    chain = [start_idx]
+    visited.add(start_idx)
+
+    # Extend chain in both directions
+    for direction in [0, 1]:
+        current_idx = start_idx
+        while True:
+            atom = mol.GetAtomWithIdx(current_idx)
+            neighbors = list(atom.GetNeighbors())
+
+            # Find next atom in chain (connected by double bond, not already in chain)
+            next_idx = None
+            for neighbor in neighbors:
+                n_idx = neighbor.GetIdx()
+                if n_idx in visited or n_idx in chain:
+                    continue
+
+                bond = mol.GetBondBetweenAtoms(current_idx, n_idx)
+                if bond and bond.GetBondType() == Chem.BondType.DOUBLE:
+                    # Check if neighbor is sp-hybridized (2 neighbors, both double bonds)
+                    # or a terminal carbon (will have 2+ neighbors with only 1 double bond)
+                    n_neighbors = list(neighbor.GetNeighbors())
+                    n_double_count = sum(
+                        1 for nn in n_neighbors
+                        if mol.GetBondBetweenAtoms(n_idx, nn.GetIdx()) and
+                           mol.GetBondBetweenAtoms(n_idx, nn.GetIdx()).GetBondType() == Chem.BondType.DOUBLE
+                    )
+                    if n_double_count >= 1:  # At least one double bond (terminal or internal)
+                        next_idx = n_idx
+                        break
+
+            if next_idx is None:
+                break
+
+            # Add to chain
+            if direction == 0:
+                chain.append(next_idx)
+            else:
+                chain.insert(0, next_idx)
+            visited.add(next_idx)
+            current_idx = next_idx
+
+            # Stop if we've reached a terminal carbon (only 1 double bond neighbor)
+            next_atom = mol.GetAtomWithIdx(next_idx)
+            next_neighbors = list(next_atom.GetNeighbors())
+            next_double_count = sum(
+                1 for nn in next_neighbors
+                if mol.GetBondBetweenAtoms(next_idx, nn.GetIdx()) and
+                   mol.GetBondBetweenAtoms(next_idx, nn.GetIdx()).GetBondType() == Chem.BondType.DOUBLE
+            )
+            if next_double_count == 1:  # Terminal - only 1 double bond
+                break
+
+    return chain if len(chain) >= 3 else None
+
+
 def extract_allenes(mol, canonical_ranks: list[int]) -> dict:
     """
-    Extract allene axial chirality using double-bond pattern.
+    Extract allene/cumulene axial chirality using double-bond pattern.
 
-    Allenes have the pattern C=C=C where the central carbon has exactly
-    2 double-bonded neighbors. Chirality arises when the substituents
-    on each end are different.
+    Detects cumulated double bond chains (C=C=C, C=C=C=C=C, etc.) and
+    extracts only odd-length chains which exhibit axial chirality.
+
+    Chirality condition:
+    - Odd-length chains (3, 5, 7...): chiral if terminal substituents differ
+    - Even-length chains (4, 6, 8...): achiral (planar)
+
+    For odd chains, the center is the middle carbon. Terminal substituents
+    are the non-chain neighbors of the end carbons.
 
     Args:
         mol: RDKit molecule object with stereochemistry assigned
@@ -156,42 +244,53 @@ def extract_allenes(mol, canonical_ranks: list[int]) -> dict:
     """
     centers = []
     subs = []
+    visited = set()
 
+    # Find all cumulene chains
     for atom in mol.GetAtoms():
+        atom_idx = atom.GetIdx()
+        if atom_idx in visited:
+            continue
+
         neighbors = list(atom.GetNeighbors())
-
-        # Allene center has exactly 2 neighbors
-        if len(neighbors) != 2:
+        # Look for atoms with at least 1 double bond (could be start of chain)
+        double_bond_count = sum(
+            1 for n in neighbors
+            if mol.GetBondBetweenAtoms(atom_idx, n.GetIdx()) and
+               mol.GetBondBetweenAtoms(atom_idx, n.GetIdx()).GetBondType() == Chem.BondType.DOUBLE
+        )
+        if double_bond_count == 0:
             continue
 
-        # Check both bonds are double
-        bond1 = mol.GetBondBetweenAtoms(atom.GetIdx(), neighbors[0].GetIdx())
-        bond2 = mol.GetBondBetweenAtoms(atom.GetIdx(), neighbors[1].GetIdx())
-
-        if bond1 is None or bond2 is None:
-            continue
-        if not (bond1.GetBondType() == Chem.BondType.DOUBLE and
-                bond2.GetBondType() == Chem.BondType.DOUBLE):
+        # Try to trace a cumulene chain starting from this atom
+        chain = _trace_cumulene_chain(mol, atom_idx, visited)
+        if chain is None:
             continue
 
-        # Valid allene center found
-        center_idx = atom.GetIdx()
-        end1_idx = neighbors[0].GetIdx()
-        end2_idx = neighbors[1].GetIdx()
+        chain_length = len(chain)
 
-        # Get substituents on each end (excluding the central carbon)
+        # Only odd-length chains are chiral
+        if chain_length % 2 == 0:
+            continue
+
+        # Get the center (middle atom of odd-length chain)
+        center_idx = chain[chain_length // 2]
+
+        # Get terminal carbons
+        end1_idx = chain[0]
+        end2_idx = chain[-1]
+
+        # Get substituents on each end (excluding chain atoms)
+        chain_set = set(chain)
         end1_subs = [n.GetIdx() for n in mol.GetAtomWithIdx(end1_idx).GetNeighbors()
-                     if n.GetIdx() != center_idx]
+                     if n.GetIdx() not in chain_set]
         end2_subs = [n.GetIdx() for n in mol.GetAtomWithIdx(end2_idx).GetNeighbors()
-                     if n.GetIdx() != center_idx]
+                     if n.GetIdx() not in chain_set]
 
         # Need exactly 2 substituents per end for chirality
-        # (if less, it's achiral; if more, it's not a simple allene)
+        # (if less, it's achiral; if more, it's not a standard cumulene)
         if len(end1_subs) != 2 or len(end2_subs) != 2:
             continue
-
-        # Optional: skip if both ends have identical substituents (achiral)
-        # For now, we extract all and let the model learn to handle achiral cases
 
         # Sort substituents by canonical rank (lower = higher priority)
         end1_subs.sort(key=lambda n: canonical_ranks[n])
@@ -417,6 +516,15 @@ def compute_all(smiles: str, max_hops: int) -> dict[str, Any] | None:
 
             # Standard tetrahedral centers (4 neighbors)
             if len(neighbors) == 4:
+                # N+ uniqueness check: quaternary N+ is only chiral if all 4
+                # substituents have different canonical ranks (e.g., tetramethylammonium
+                # [N+(CH3)4] is NOT chiral because all methyls are equivalent)
+                if element == 7 and center_atom.GetFormalCharge() == 1:
+                    neighbor_ranks = [canonical_ranks[n.GetIdx()] for n in neighbors]
+                    if len(set(neighbor_ranks)) != 4:
+                        # Skip - symmetric N+ is not chiral
+                        continue
+
                 # Sort neighbors by canonical rank (lowest rank = highest priority first)
                 neighbors.sort(key=lambda n: canonical_ranks[n.GetIdx()])
                 neighbor_indices = [n.GetIdx() for n in neighbors]
