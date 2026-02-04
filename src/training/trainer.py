@@ -124,27 +124,23 @@ def _setup_scheduler(
             mode="min",
             factor=current_args.lr_reduce_factor,
             patience=int(current_args.lr_patience),
-            verbose=True
         )
     elif current_args.lr_scheduler == "CosineAnnealingLR":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=current_args.lr_cosine_t_max,
             eta_min=0,
-            verbose=True
         )
     elif current_args.lr_scheduler == "StepLR":
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer,
             step_size=current_args.lr_step_size,
             gamma=current_args.lr_step_gamma,
-            verbose=True
         )
     elif current_args.lr_scheduler == "ExponentialLR":
         scheduler = torch.optim.lr_scheduler.ExponentialLR(
             optimizer,
             gamma=current_args.lr_exp_gamma,
-            verbose=True
         )
     else:
         scheduler = None
